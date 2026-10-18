@@ -1,0 +1,24 @@
+# Secrets / local config
+.env
+.env.*
+!.env.example
+# Operational data (DB, uploaded avatars, local rules override, master data)
+data/
+instance/
+local/
+*.db
+*.db-wal
+*.db-shm
+# Local launchers with machine-specific paths
+*.local.*
+start-local.*
+# Junk
+*.bak*
+*.log
+logs/
+screenshot*.png
+screenshots/
+venv/
+.venv/
+__pycache__/
+*.pyc
