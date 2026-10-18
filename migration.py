@@ -254,7 +254,7 @@ def apply(payload):
         for tag in report['group_tags']['create']:
             c.execute('INSERT INTO group_tags(name,color,sort) VALUES(?,?,(SELECT COALESCE(MAX(sort),0)+1 FROM group_tags))',
                       (tag['name'],tag['color']))
-        parents,ids = {},[]
+        parents,ids,changed_jobs = {},[],set()
         for current in items:
             entity_id = _insert(c,current,parents)
             source = current['target']['source']
@@ -262,6 +262,7 @@ def apply(payload):
             ids.append(dict(system=source['system'],uuid=source['uuid'],kind=current['kind'],new_id=entity_id))
             if not current['skip']:
                 c.execute('INSERT INTO migration_items VALUES(?,?,?,?,?,?)',(source['system'],source['uuid'],batch_id,current['hash'],canonical(current['raw']),canonical(current['target'])))
+                changed_jobs.add(entity_id if current['kind']=='job' else parents[current['parent']])
         for mapping in dict.fromkeys(mappings):
             c.execute('INSERT OR IGNORE INTO source_master_mappings VALUES(?,?,?,?,?)',mapping)
         # Compare each persisted field inside the transaction before committing anything.
@@ -274,8 +275,8 @@ def apply(payload):
                 if saved[field] != value: raise ValueError('post-import field mismatch: '+identity['uuid']+':'+field)
         if c.execute('PRAGMA foreign_key_check').fetchone(): raise ValueError('foreign key check failed')
         result = dict(report,status='completed',payload_hash=request_hash,ids=ids,verified=True)
-        for job_id in dict.fromkeys(parents.values()): db.migration_audit(c,job_id,batch_id,'一括取り込み・照合完了')
+        for job_id in sorted(changed_jobs): db.migration_audit(c,job_id,batch_id,'一括取り込み・照合完了')
         c.execute("UPDATE migration_batches SET status='completed',result=? WHERE batch_id=?",(canonical(result),batch_id))
-    db._emit(dict(type='migration',scope='job',job_ids=list(parents.values())))
+    if changed_jobs: db._emit(dict(type='migration',scope='job',job_ids=sorted(changed_jobs)))
     if report['group_tags']['create']: db._emit(dict(type='migration_tags',scope='master',job_ids=[]))
     return result

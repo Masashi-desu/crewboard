@@ -543,6 +543,66 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(results[0],results[1])
         self.assertEqual(len(db.list_group_tags()),3)
 
+    def test_new_batch_all_skip_preserves_twenty_three_jobs_and_all_other_tables(self):
+        import copy, migration
+        payload=self.migration_payload('first-23',register_tags=False)
+        payload['create_group_tags']=[dict(name='TagA'),dict(name='TagB')]
+        template=payload['jobs'][0]
+        payload['jobs']=[]
+        for i in range(23):
+            job=copy.deepcopy(template)
+            job['source']['uuid']=f'skip-job-{i}'
+            for index,task in enumerate(job['tasks']): task['source']['uuid']=f'skip-task-{i}-{index}'
+            event=job['source_history'][0]
+            event.update(id=f'skip-event-{i}',job_uuid=job['source']['uuid'],task_uuid=job['tasks'][0]['source']['uuid'])
+            payload['jobs'].append(job)
+        payload['expected_counts']=dict(jobs=23,tasks=46,wait=23,unassigned=23,history=23)
+        self.migration_backup(payload)
+        with patch.object(migration.config,'MIGRATION_ENABLED',True):
+            initial=migration.apply(payload)
+            with db.conn() as c:
+                tables=[r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name!='migration_batches'")]
+                before={name:[tuple(r) for r in c.execute('SELECT * FROM '+name)] for name in tables}
+                batch_count=c.execute('SELECT COUNT(*) FROM migration_batches').fetchone()[0]
+            for number in (2,3):
+                payload['batch_id']=f'all-skip-{number}'
+                self.migration_backup(payload,f'all-skip-snapshot-{number}')
+                with patch.object(db,'migration_audit',wraps=db.migration_audit) as audit, patch.object(db,'_emit') as emitted:
+                    result=migration.apply(payload)
+                    audit.assert_not_called(); emitted.assert_not_called()
+                self.assertEqual(result['create'],0)
+                self.assertEqual(result['skip'],69)
+                self.assertEqual(migration.apply(payload),result)
+                with db.conn() as c:
+                    after={name:[tuple(r) for r in c.execute('SELECT * FROM '+name)] for name in tables}
+                    self.assertEqual(after,before)
+                    self.assertEqual(c.execute('SELECT COUNT(*) FROM migration_batches').fetchone()[0],batch_count+number-1)
+        self.assertEqual(len([r for r in initial['ids'] if r['kind']=='job']),23)
+
+    def test_mixed_skip_batch_audits_and_notifies_only_new_jobs(self):
+        import copy, migration
+        payload=self.migration_payload('mixed-first')
+        self.migration_backup(payload)
+        with patch.object(migration.config,'MIGRATION_ENABLED',True):
+            first=migration.apply(payload)
+            existing_id=first['ids'][0]['new_id']
+            before=db.get_job(existing_id)
+            new=copy.deepcopy(payload['jobs'][0])
+            new['source']['uuid']='new-job'
+            for index,task in enumerate(new['tasks']): task['source']['uuid']=f'new-task-{index}'
+            new['source_history'][0].update(id='new-event',job_uuid='new-job',task_uuid='new-task-0')
+            payload['jobs'].append(new)
+            payload['batch_id']='mixed-new-batch'
+            payload['expected_counts']=dict(jobs=2,tasks=4,wait=2,unassigned=2,history=2)
+            self.migration_backup(payload,'mixed-new-snapshot')
+            with patch.object(db,'migration_audit',wraps=db.migration_audit) as audit, patch.object(db,'_emit') as emitted:
+                result=migration.apply(payload)
+            new_id=next(r['new_id'] for r in result['ids'] if r['uuid']=='new-job')
+            self.assertEqual(audit.call_count,1)
+            self.assertEqual(audit.call_args.args[1],new_id)
+            self.assertEqual(emitted.call_args.args[0]['job_ids'],[new_id])
+            self.assertEqual(db.get_job(existing_id),before)
+
     def migration_payload(self, batch_id="batch-1", register_tags=True):
         def source(uid,number):
             return dict(system="old",uuid=uid,number=number,created_at="2020-01-01T00:00:00+09:00",
