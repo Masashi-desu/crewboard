@@ -134,10 +134,10 @@ def _validate_source(source):
 def _urls(urls):
     if not isinstance(urls, list): raise ValueError("session_urls must be an array")
     for url in urls:
-        if not isinstance(url, str) or any(ord(ch) < 32 for ch in url): raise ValueError("invalid session URL")
+        if not isinstance(url, str) or any(ord(ch) < 32 or ord(ch) == 127 for ch in url): raise ValueError("invalid session URL")
         parsed = urlsplit(url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
-            raise ValueError("session URLs must be HTTP(S) URLs without credentials")
+        if parsed.scheme not in ("http", "https", "codex") or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            raise ValueError("session URLs must use http://, https:// or codex:// without credentials")
     return json.dumps(urls, ensure_ascii=False)
 
 def _resolved_references(c, source):

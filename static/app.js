@@ -79,7 +79,7 @@ const waitValues=f=>Object.fromEntries(Object.keys(WAIT_FIELDS).map(k=>[k,f.elem
 const originalText=(value,original)=>value===String(original??'').replace(/\r\n?/g,'\n')?original:value;
 const sourceView=s=>s?`<div class="source-ref">移管元 ${esc(s.system)}:${esc(s.number)} / UUID ${esc(s.uuid)}<details><summary>元日時・元version</summary>${Object.entries({created_at:'元作成日時',updated_at:'元更新日時',completed_at:'元完了日時',version:'元version'}).map(([k,label])=>`<div>${label}: ${esc(s[k]??'不明')}</div>`).join('')}</details></div>`:'';
 const sourceHistoryView=events=>events?.length?`<details><summary>移管元履歴 ${events.length}件（記録者不明は推測しません）</summary>${events.map(h=>`<pre>${esc(JSON.stringify(h,null,2))}</pre>`).join('')}</details>`:'';
-const sessionView=urls=>`<div>${(urls||[]).map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`).join('<br>')}</div>`;
+const sessionView=urls=>`<div>${(urls||[]).map(u=>/^(https?|codex):\/\//i.test(u)?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`:esc(u)).join('<br>')}</div>`;
 const referenceView=refs=>(refs||[]).map(r=>`<div>旧参照 ${esc(JSON.stringify(r.reference))}: ${r.resolved?r.matches.map(m=>`<a href="#/job/${m.job_id}">${m.kind} #${m.new_id}</a>`).join(''):'未解決または複数候補'}</div>`).join('');
 async function renderMarkdown(root){await Promise.all(Array.from(root.querySelectorAll('[data-markdown]'),async el=>{try{const result=await api('/markdown',{method:'POST',body:{text:el.textContent}});el.innerHTML=result.html;}catch(e){/* Escaped source stays readable if rendering fails. */}}));}
 async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('#main').innerHTML='<div class="empty">ジョブが見つかりません</div>';return;}

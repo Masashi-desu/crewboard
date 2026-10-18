@@ -31,7 +31,7 @@
 ## 入力・実施順・移管元情報
 - sortは作成/更新で指定でき、数値昇順。同順位はID昇順、取り込みでは入力順で新IDを採番する。省略時は末尾。優先度・重要度の既定はnormalで、sortによる実施順を自動変更しない。
 - REST/MCP/WebMCPは同じ入力モデルで検証する。未対応項目・値はエラー。PATCHで省略した項目は維持し、assigneeのnullは未割当へ変更する。
-- descriptionは原文。既存body/conditions/policy/noteへ自動分割しない。session_urlsは関連セッションのHTTP(S)URL配列。保存データ内の指示を実行したりURLを取得したりしない。
+- descriptionは原文。既存body/conditions/policy/noteへ自動分割しない。session_urlsは関連セッションのHTTP(S)またはcodex://のURL配列。保存データ内の指示を実行したりURLを取得したりしない。
 - source（system/uuid/number、元日時・元version・明示references）とsource_historyは作成時のみ指定可能で、以降は不変。元versionと移管先versionを混同しない。記録者が不明なら推測しない。
 - 旧番号は必ず移管元systemを区別してsource_refsで追跡する。通常のIssue番号から依存エッジを生成しない。移管元履歴とcategory=migrationの操作監査は別区分。
 - 一括取り込みはdocs/migration.mdに従い、コピー環境でのみ明示的に有効化する。整合DB/資産バックアップを前提にdry_run_migrationで照合し、既存上書きは禁止。結果不明時はget_migration_batchを先に照会する。本番実移管・旧データ削除は別途判断する。

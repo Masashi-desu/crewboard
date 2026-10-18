@@ -372,6 +372,51 @@ class MigrationTests(unittest.TestCase):
         self.assertFalse(job["resolved_references"][1]["resolved"])
         self.assertEqual(db.create_job("plain", description="#0001")["resolved_references"], [])
 
+    def test_codex_session_urls_roundtrip_via_rest_and_mcp(self):
+        import asyncio
+        urls=['codex://threads/example-id?view=original#message', 'https://example.com/session', 'http://example.com/session']
+        response=client.post('/api/jobs',headers=self.headers,json=dict(title='codex sessions',session_urls=urls))
+        self.assertEqual(response.status_code,201,response.text)
+        job=response.json()
+        self.assertEqual(job['session_urls'],urls)
+        task=asyncio.run(app.mcp._tool_manager.call_tool('add_task',dict(job_id=job['id'],title='codex task',session_urls=urls)))
+        self.assertEqual(task['session_urls'],urls)
+        self.assertEqual(client.get(f"/api/jobs/{job['id']}",headers=self.headers).json()['tasks'][0]['session_urls'],urls)
+
+    def test_unsafe_session_url_schemes_and_credentials_stay_rejected(self):
+        for url in ('javascript:alert(1)','data:text/html,test','file:///tmp/test','ftp://example.com/x',
+                    'codex:threads/x','codex:///threads/x','codex://user@threads/x','https://@example.com/x',
+                    'codex://threads/x\ncommand','codex://threads/x\x7f'):
+            with self.subTest(url=url):
+                response=client.post('/api/jobs',headers=self.headers,json=dict(title='unsafe URL',session_urls=[url]))
+                self.assertEqual(response.status_code,400,response.text)
+
+    def test_twelve_codex_session_urls_import_without_external_requests(self):
+        import copy, migration
+        payload=self.migration_payload('codex-batch')
+        template=payload['jobs'][0]
+        payload['jobs']=[]
+        for i in range(6):
+            job=copy.deepcopy(template)
+            job['source']['uuid']=f'codex-job-{i}'
+            job['source']['number']=f'#{i:04}'
+            job['session_urls']=[f'codex://threads/job-{i}']
+            job['tasks']=job['tasks'][:1]
+            task=job['tasks'][0]
+            task['source']['uuid']=f'codex-task-{i}'
+            task['session_urls']=[f'codex://threads/task-{i}']
+            job['source_history']=[]
+            payload['jobs'].append(job)
+        payload['expected_counts']=dict(jobs=6,tasks=6,wait=6,unassigned=6,history=0)
+        self.migration_backup(payload)
+        with patch('urllib.request.urlopen',side_effect=AssertionError('external access forbidden')):
+            self.assertEqual(migration.dry_run(payload)['status'],'valid')
+            with patch.object(migration.config,'MIGRATION_ENABLED',True): result=migration.apply(payload)
+        for identity in (r for r in result['ids'] if r['kind']=='job'):
+            job=db.get_job(identity['new_id'])
+            self.assertEqual(job['session_urls'],next(j['session_urls'] for j in payload['jobs'] if j['source']==job['source']))
+            self.assertTrue(job['tasks'][0]['session_urls'][0].startswith('codex://threads/'))
+
     def migration_payload(self, batch_id="batch-1"):
         def source(uid,number):
             return dict(system="old",uuid=uid,number=number,created_at="2020-01-01T00:00:00+09:00",

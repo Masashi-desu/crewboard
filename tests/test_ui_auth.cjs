@@ -124,3 +124,16 @@ test('unchanged textareas preserve original CRLF and leading or trailing newline
  assert.equal(context.originalText(original.replace(/\r\n/g,'\n'),original),original);
  assert.equal(context.originalText('edited\n',original),'edited\n');
 });
+
+test('session links display codex URLs safely and never link unsupported schemes',()=>{
+ const context=vm.createContext({});
+ const escSource=source.slice(source.indexOf('const $='),source.indexOf('\nconst av='));
+ const sessionSource=source.slice(source.indexOf('const sessionView='),source.indexOf('\nconst referenceView='));
+ vm.runInContext(escSource+'\n'+sessionSource+'\nglobalThis.sessionView=sessionView;',context);
+ const html=context.sessionView(['codex://threads/id?x="quoted"&y=1','javascript:alert(1)','data:text/html,<script>x</script>']);
+ assert.ok(html.includes('href="codex://threads/id?x=&quot;quoted&quot;&amp;y=1"'));
+ assert.ok(!html.includes('href="javascript:'));
+ assert.ok(!html.includes('href="data:'));
+ assert.ok(!html.includes('<script>'));
+ assert.ok(html.includes('rel="noopener noreferrer"'));
+});

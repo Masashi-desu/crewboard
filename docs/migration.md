@@ -58,7 +58,10 @@ jobs/tasksへdescriptionとsession_urls（JSON配列）を加算。既存conditi
 旧descriptionを自動分割しない。CRLF・末尾改行を含む原文はDB/APIで無損失。
 表示だけCommonMark（markdown-it-py、HTML無効）へ変換する。コード・改行・リンクを扱い、
 危険なリンクを無効化し、画像はaltテキスト表示で外部取得しない。編集には原文を使う。
-関連セッションURLはHTTP(S)文字列の配列。保存中にURLへアクセスしない。
+関連セッションURLはHTTP(S)または `codex://` の文字列配列。保存中にURLへアクセスしない。
+`codex://threads/...` も原文のまま保存・再取得し、UIはクリック可能なリンクとして表示する。
+許可するスキームはhttp/https/codexだけで、ホストなし・認証情報付き・制御文字入りURLを拒否する。
+javascript:/data:/file:等は引き続き拒否し、UIも未対応スキームをリンクにしない。
 source.referencesに明示指定されたuuid/numberのみ対応表で解決し、UIにリンクまたは未解決を表示。
 例示・通常のIssue番号から参照や依存エッジを推測しない。元本文自体は書き換えない。
 
