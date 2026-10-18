@@ -48,7 +48,8 @@ handle_path /crewboard/* {
 ## API
 - REST: `GET/POST api/jobs`, `GET/PATCH/DELETE api/jobs/{id}`, `POST api/jobs/{id}/tasks`, `PATCH/DELETE api/tasks/{id}`, `GET/POST api/assignees`, `PATCH/DELETE api/assignees/{name}`, `PUT/DELETE api/assignees/{name}/icon`, `GET/POST api/group_tags`, `PATCH/DELETE api/group_tags/{name}`, `PUT api/jobs/{id}/assignees`, `GET api/matrix`, `GET api/rules`, `GET api/events` (SSE). OpenAPI docs at `docs`.
 - MCP (Streamable HTTP, stateless): `<base>/mcp/` with header `Authorization: Bearer <CREWBOARD_MCP_TOKEN>`. Tools: get_rules, list_jobs, get_job, create_job, update_job, move_job, delete_job, add_task, update_task, delete_task, get_matrix, assign_job, list_assignees, add_assignee, update_assignee, delete_assignee, list_group_tags, add_group_tag, update_group_tag, delete_group_tag.
-- WebMCP: if `navigator.modelContext` exists, the page registers 17 tools. They share names with the 20 MCP tools, but omit `delete_task`, `delete_assignee`, and `delete_group_tag`; some parameters are also a subset. `delete_job` requires `confirm:true`.
+- Migration tools: source_refs, dry_run_migration, import_migration, get_migration_batch (REST: `api/source_refs`, `api/migrations/dry_run`, `api/migrations`, `api/migrations/{batch_id}`).
+- WebMCP: if `navigator.modelContext` exists, the page registers 21 tools sharing names with the 24 MCP tools, omitting `delete_task`, `delete_assignee`, and `delete_group_tag`. Job/task writes and filters share typed REST/MCP/WebMCP schemas, including sort, priority, importance, wait, tags and source fields. `delete_job` requires `confirm:true`.
 
 ## Security
 - By default, Crewboard is intended for a trusted network (such as a private tailnet) or an authenticating reverse proxy. REST reads and writes are unauthenticated while `CREWBOARD_API_TOKEN` is empty. Bind to loopback by default; do not expose this configuration directly to an untrusted network.

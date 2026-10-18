@@ -235,8 +235,8 @@ def list_jobs(status=None, q=None, priority=None, group_tag=None, include_tasks=
         for name in dict.fromkeys(([group_tag] if group_tag else []) + (group_tags or [])):
             sql += " AND EXISTS(SELECT 1 FROM job_group_tags g WHERE g.job_id=jobs.id AND g.name=?)"; a.append(name)
         if q:
-            sql += " AND (title LIKE ? OR conditions LIKE ? OR policy LIKE ? OR note LIKE ? OR EXISTS(SELECT 1 FROM source_records s WHERE s.job_id=jobs.id AND (s.number LIKE ? OR (s.system || ':' || s.number) LIKE ?)))"
-            a += [f"%{q}%"]*6
+            sql += " AND (title LIKE ? OR conditions LIKE ? OR policy LIKE ? OR note LIKE ? OR description LIKE ? OR EXISTS(SELECT 1 FROM source_records s WHERE s.job_id=jobs.id AND (s.number LIKE ? OR (s.system || ':' || s.number) LIKE ?)))"
+            a += [f"%{q}%"]*7
         return [_job(c, r, include_tasks) for r in c.execute(sql+" ORDER BY sort,id", a)]
 
 def get_job(job_id):
@@ -265,7 +265,8 @@ def _check(f, v):
     if f=="priority" and v not in PRIORITIES: raise ValueError(f"priority must be one of {PRIORITIES}")
     if f=="importance" and v not in LEVELS: raise ValueError(f"importance must be one of {LEVELS}")
 
-def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None, group_tags=None, source=None, source_history=None, description="", session_urls=None):
+def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None, group_tags=None, source=None, source_history=None, description="", session_urls=None, sort=None):
+    if not isinstance(title,str) or not title.strip(): raise ValueError("job title is required")
     for f,v in (("status",status),("priority",priority),("importance",importance)): _check(f,v)
     groups = _groups(group_tag, group_tags); group_tag = groups[0] if groups else ""
     assignees = assignees or []
@@ -274,6 +275,7 @@ def create_job(title, status="wait", priority="normal", importance="normal", tag
     t = now()
     with conn() as c:
         mx = c.execute("SELECT COALESCE(MAX(sort),0)+1 FROM jobs").fetchone()[0]
+        if sort is not None: mx = sort
         cur = c.execute("INSERT INTO jobs(title,status,priority,importance,tags,group_tag,conditions,policy,note,assignees,sort,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (title,status,priority,importance,json.dumps(tags or [],ensure_ascii=False),group_tag,conditions,policy,note,json.dumps(assignees,ensure_ascii=False),mx,t,t))
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(cur.lastrowid,t,"作成"))
@@ -290,6 +292,7 @@ def update_job(job_id, **kw):
     if "source" in kw:
         with conn() as c: _immutable_source(c, "job", job_id, kw.pop("source"))
     kw = {k:v for k,v in kw.items() if k in JOB_FIELDS and v is not None}
+    if "title" in kw and not kw["title"].strip(): raise ValueError("job title is required")
     groups = None
     if "group_tag" in kw or "group_tags" in kw:
         groups = _groups(kw.get("group_tag"), kw.pop("group_tags", None))
@@ -317,6 +320,8 @@ def move_job(job_id, status, sort=None): return update_job(job_id, status=status
 
 def delete_job(job_id):
     with conn() as c:
+        if _source(c,"job",job_id) or c.execute("SELECT 1 FROM source_records s JOIN tasks t ON t.id=s.task_id WHERE t.job_id=?",(job_id,)).fetchone():
+            raise ValueError("source records must be retained; archive the job as done instead")
         c.execute("DELETE FROM tasks WHERE job_id=?",(job_id,)); c.execute("DELETE FROM history WHERE job_id=?",(job_id,))
         n = c.execute("DELETE FROM jobs WHERE id=?",(job_id,)).rowcount
     if not n: raise KeyError(f"job {job_id} not found")
@@ -329,11 +334,12 @@ def _check_task(kw):
         if f in kw and kw[f] not in LEVELS: raise ValueError(f"{f} must be one of {LEVELS}")
 
 def add_task(job_id, title="", body="", status="todo", assignee=None, priority="normal", importance="normal",
-             wait_reason="", wait_for="", wait_note="", resume_condition="", source=None, source_history=None, description="", session_urls=None):
+             wait_reason="", wait_for="", wait_note="", resume_condition="", source=None, source_history=None, description="", session_urls=None, sort=None):
     if not (title or "").strip(): raise ValueError("task title is required")
     _check_task(dict(status=status, assignee=assignee, priority=priority, importance=importance)); get_job(job_id); t = now()
     with conn() as c:
         mx = c.execute("SELECT COALESCE(MAX(sort),0)+1 FROM tasks WHERE job_id=?",(job_id,)).fetchone()[0]
+        if sort is not None: mx = sort
         cur = c.execute("INSERT INTO tasks(job_id,title,body,status,assignee,priority,importance,sort,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (job_id,title,body,status,assignee,priority,importance,mx,t,t))
         c.execute("UPDATE tasks SET wait_reason=?,wait_for=?,wait_note=?,resume_condition=? WHERE id=?",
@@ -385,6 +391,7 @@ def update_task(task_id, **kw):
 
 def delete_task(task_id):
     with conn() as c:
+        if _source(c,"task",task_id): raise ValueError("source records must be retained; complete the task instead")
         r = c.execute("SELECT job_id,status FROM tasks WHERE id=?",(task_id,)).fetchone()
         c.execute("DELETE FROM tasks WHERE id=?",(task_id,))
         if r and r["status"] != "done": _auto_done(c, r["job_id"], now())
@@ -430,10 +437,10 @@ def update_assignee(name, new_name=None, kind=None):
         if new_name and new_name != name:
             if c.execute("SELECT 1 FROM assignees WHERE name=?", (new_name,)).fetchone(): raise ValueError(f"{new_name} already exists")
             c.execute("UPDATE assignees SET name=? WHERE name=?", (new_name, name))
-            c.execute("UPDATE tasks SET assignee=? WHERE assignee=?", (new_name, name))
+            c.execute("UPDATE tasks SET assignee=?,version=version+1,updated_at=? WHERE assignee=?", (new_name, now(), name))
             for r in c.execute("SELECT id,assignees FROM jobs").fetchall():
                 al = json.loads(r[1] or "[]")
-                if name in al: c.execute("UPDATE jobs SET assignees=? WHERE id=?", (json.dumps([new_name if a==name else a for a in al], ensure_ascii=False), r[0]))
+                if name in al: c.execute("UPDATE jobs SET assignees=?,version=version+1,updated_at=? WHERE id=?", (json.dumps([new_name if a==name else a for a in al], ensure_ascii=False), now(), r[0]))
     return list_assignees(True)
 def delete_assignee(name):
     with conn() as c:
@@ -460,14 +467,18 @@ def update_group_tag(name, new_name=None, color=None):
         if color is not None: c.execute("UPDATE group_tags SET color=? WHERE name=?", (color, name))
         if new_name and new_name != name:
             if c.execute("SELECT 1 FROM group_tags WHERE name=?", (new_name,)).fetchone(): raise ValueError(f"{new_name} already exists")
+            affected = [r[0] for r in c.execute("SELECT job_id FROM job_group_tags WHERE name=?",(name,))]
             c.execute("UPDATE group_tags SET name=? WHERE name=?", (new_name, name))
             c.execute("UPDATE jobs SET group_tag=? WHERE group_tag=?", (new_name, name))
+            c.executemany("UPDATE jobs SET version=version+1,updated_at=? WHERE id=?",[(now(),job_id) for job_id in affected])
     return list_group_tags()
 def delete_group_tag(name):
     """Deletes the tag; jobs using it become 'グループタグなし' (group_tag='')."""
     with conn() as c:
+        affected = [r[0] for r in c.execute("SELECT job_id FROM job_group_tags WHERE name=?",(name,))]
         c.execute("DELETE FROM group_tags WHERE name=?", (name,))
         c.execute("UPDATE jobs SET group_tag=COALESCE((SELECT name FROM job_group_tags WHERE job_id=jobs.id ORDER BY position,name LIMIT 1),'') WHERE group_tag=?", (name,))
+        c.executemany("UPDATE jobs SET version=version+1,updated_at=? WHERE id=?",[(now(),job_id) for job_id in affected])
     return list_group_tags()
 
 

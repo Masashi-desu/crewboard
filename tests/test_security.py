@@ -509,6 +509,54 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(len(db.list_jobs()),before)
         with self.assertRaises(KeyError): migration.get_batch(payload['batch_id'])
 
+    def test_rest_mcp_new_fields_and_explicit_null_have_equal_meanings(self):
+        import asyncio
+        manager=app.mcp._tool_manager
+        async def call(name,values): return await manager.call_tool(name,values)
+        source=dict(system='contract',uuid='job',number='#0001',version=23)
+        job=asyncio.run(call('create_job',dict(title='contract',sort=-2.5,source=source,description='**raw**\r\n')))
+        self.assertEqual(job['sort'],-2.5)
+        self.assertEqual(job['priority'],'normal')
+        self.assertEqual(job['source'],source)
+        task_values=dict(title='task',sort=-4,priority='high',importance='low',status='wait',assignee='Owner',
+            wait_reason='why',wait_for='who',wait_note='note',resume_condition='resume',description='原文\r\n',
+            session_urls=['https://example.com/session'],source=dict(system='contract',uuid='task',number='#0001-01'))
+        task=asyncio.run(call('add_task',dict(job_id=job['id'],**task_values)))
+        rest=client.get(f"/api/jobs/{job['id']}",headers=self.headers).json()['tasks'][0]
+        self.assertEqual(task,rest)
+        for key,value in task_values.items(): self.assertEqual(rest[key],value)
+        updated=asyncio.run(call('update_task',dict(task_id=task['id'],wait_note='edited',sort=0.5)))
+        self.assertEqual(updated['assignee'],'Owner')
+        cleared=asyncio.run(call('update_task',dict(task_id=task['id'],assignee=None)))
+        self.assertIsNone(cleared['assignee'])
+        self.assertEqual(cleared['source'],task_values['source'])
+
+    def test_shared_schemas_and_unknown_or_immutable_fields_are_not_ignored(self):
+        import asyncio, re, tool_contracts
+        html=client.get('/').text
+        embedded=json.loads(re.search(r'<script type="application/json" id="tool-schemas">(.*?)</script>',html).group(1))
+        self.assertEqual(embedded,tool_contracts.schemas())
+        for name,schema in embedded.items(): self.assertEqual(app.mcp._tool_manager.get_tool(name).parameters,schema)
+        openapi=app.app.openapi()
+        self.assertEqual(set(openapi['components']['schemas']['JobCreate']['properties']),set(embedded['create_job']['properties']))
+        for body in ({'title':'bad','ignored':1},{'title':'bad','sort':None},{'title':'bad','status':'unknown'}):
+            self.assertEqual(client.post('/api/jobs',json=body,headers=self.headers).status_code,422)
+        job=db.create_job('immutable')
+        self.assertEqual(client.patch(f"/api/jobs/{job['id']}",json={'source':None},headers=self.headers).status_code,422)
+        with self.assertRaises(Exception): asyncio.run(app.mcp._tool_manager.call_tool('create_job',{'title':'bad','ignored':1}))
+        task=client.post(f"/api/jobs/{job['id']}/tasks",json={'title':'normal','sort':8.25},headers=self.headers).json()
+        self.assertEqual(task['sort'],8.25)
+        self.assertEqual(task['priority'],'normal')
+        self.assertEqual(task['importance'],'normal')
+
+    def test_source_mapping_survives_delete_attempts(self):
+        job=db.create_job('protected source',source=dict(system='old',uuid='protected-job',number='#0001'))
+        task=db.add_task(job['id'],'protected task',source=dict(system='old',uuid='protected-task',number='#0001-01'))
+        self.assertEqual(client.delete(f"/api/jobs/{job['id']}",headers=self.headers).status_code,400)
+        self.assertEqual(client.delete(f"/api/tasks/{task['id']}",headers=self.headers).status_code,400)
+        self.assertEqual(db.source_refs('old',uuid='protected-task')[0]['new_id'],task['id'])
+        self.assertEqual(len(db.get_job(job['id'])['tasks']),1)
+
 
 class DownloadTransportTests(unittest.TestCase):
     @classmethod
@@ -684,6 +732,12 @@ class RunningServerTests(unittest.TestCase):
                 result = subprocess.run([sys.executable, "-B", str(ROOT / "tests" / name)], cwd=ROOT,
                                         env=self.env, capture_output=True, text=True, encoding="utf-8", timeout=30)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_webmcp_roundtrip_against_disposable_rest_server(self):
+        result=subprocess.run(['node','--test',str(ROOT/'tests'/'test_webmcp_roundtrip.cjs')],cwd=ROOT,
+            env={**self.env,'CREWBOARD_TEST_BASE':self.base,'CREWBOARD_TEST_API_TOKEN':API_TOKEN},
+            capture_output=True,text=True,encoding='utf-8',timeout=30)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
 
 
 if __name__ == "__main__":

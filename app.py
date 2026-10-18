@@ -4,6 +4,8 @@ from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from schemas import JobPatch as JobIn, TaskPatch as TaskIn, JobCreate, TaskCreate, MigrationPayload, JobStatus, Priority
+import tool_contracts
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 import db, avatars, asyncio, json, itertools, functools
@@ -31,8 +33,8 @@ TOKEN = config.MCP_TOKEN
 API_TOKEN = config.API_TOKEN
 def rules_text():
     with open(config.rules_path(), encoding="utf-8") as source: return source.read()
-R_JOB = "ルール: status は wait(着手不可/待ち)/ready(着手可)/run(進行中)/done(完了→完了履歴)。priority low|normal|high|urgent, importance low|normal|high。group_tag はマスタ登録済みのみ。自動完了: 全タスクが完了するとジョブは自動で done になる（自分でジョブのステータスを変える必要はない）。done のジョブに未完了タスクが生じる（タスクを todo/doing に戻す・未完了タスクを追加）と自動で run に戻る。詳細は get_rules。"
-R_TASK = "ルール: タスクは上から順に実行（先頭の未完了タスクの担当=現在の担当）。title必須・body任意。assignee はマスタ(list_assignees)の名前が必須。完了は status=done。全タスクが完了するとジョブは自動で done になる（自分でジョブのステータスを変える必要はない）。done のジョブに未完了タスクが生じる（タスクを todo/doing に戻す・未完了タスクを追加）と自動で run に戻る。詳細は get_rules。"
+R_JOB = "ルール: status は wait(着手不可/待ち)/ready(着手可)/run(進行中)/done(完了→完了履歴)。priority low|normal|high|urgent, importance low|normal|high。group_tags は登録済み名の配列。複数指定はAND検索。group_tagは先頭タグの互換値。自動完了: 全タスクが完了するとジョブは自動で done になる（自分でジョブのステータスを変える必要はない）。done のジョブに未完了タスクが生じる（タスクを todo/doing/wait に戻す・未完了タスクを追加）と自動で run に戻る。詳細は get_rules。"
+R_TASK = "ルール: タスクは上から順に実行（先頭の未完了タスクの担当=現在の担当）。title必須・body任意。assignee は登録済み名または未割当(null/空文字)。自動補完しない。waitは着手不可。待ち理由・待ち先・補足・再開条件を保持する。完了は status=done。全タスクが完了するとジョブは自動で done になる（自分でジョブのステータスを変える必要はない）。done のジョブに未完了タスクが生じる（タスクを todo/doing/wait に戻す・未完了タスクを追加）と自動で run に戻る。詳細は get_rules。"
 db.init()
 
 mcp = FastMCP("crewboard", stateless_http=True, streamable_http_path="/",
@@ -51,42 +53,20 @@ def rules_resource_legacy() -> str:
 def get_rules() -> str:
     """Crewboard の運用ルール（日本語 Markdown）を返す。操作前に一度読むこと。"""
     return rules_text()
-@mcp.tool()
-def list_jobs(status: Optional[str]=None, query: Optional[str]=None, priority: Optional[str]=None, group_tag: Optional[str]=None, group_tags: Optional[List[str]]=None) -> list:
-    """List jobs (with tasks; current_assignee = assignee of the first not-done task). status: wait|ready|run|done. priority: low|normal|high|urgent(最優先)."""
-    return db.list_jobs(status, query, priority, group_tag, group_tags=group_tags)
+
 @mcp.tool()
 def get_job(job_id: int) -> dict:
     """Get a job with its tasks and history."""
     return db.get_job(job_id)
-@mcp.tool()
-def create_job(title: str, status: str="wait", priority: str="normal", importance: str="normal", tags: Optional[List[str]]=None,
-               group_tag: str="", conditions: str="", policy: str="", note: str="") -> dict:
-    """Create a job. priority low|normal|high|urgent, importance low|normal|high. conditions=完了条件, policy=方針, note=その他."""
-    return db.create_job(title, status, priority, importance, tags, group_tag, conditions, policy, note)
-@mcp.tool()
-def update_job(job_id: int, assignees: Optional[List[str]]=None, title: Optional[str]=None, status: Optional[str]=None, priority: Optional[str]=None, importance: Optional[str]=None,
-               tags: Optional[List[str]]=None, group_tag: Optional[str]=None, conditions: Optional[str]=None, policy: Optional[str]=None, note: Optional[str]=None) -> dict:
-    """Update fields of a job (only provided fields change)."""
-    return db.update_job(job_id, assignees=assignees, title=title, status=status, priority=priority, importance=importance, tags=tags, group_tag=group_tag, conditions=conditions, policy=policy, note=note)
-@mcp.tool()
-def move_job(job_id: int, status: str) -> dict:
-    """Move a job to another column: wait|ready|run|done (done = 完了履歴)."""
-    return db.move_job(job_id, status)
+
+
+
 @mcp.tool()
 def delete_job(job_id: int) -> dict:
     """Permanently delete a job with its tasks and history (not moved to 完了履歴)."""
     return db.delete_job(job_id)
-@mcp.tool()
-def add_task(job_id: int, title: str, body: str="", status: str="todo", assignee: Optional[str]=None, priority: str="normal", importance: str="normal",
-             wait_reason: str="", wait_for: str="", wait_note: str="", resume_condition: str="") -> dict:
-    """Add a task. wait blocks execution; null/empty assignee remains unassigned."""
-    return db.add_task(job_id, title, body, status, assignee, priority, importance, wait_reason, wait_for, wait_note, resume_condition)
-@mcp.tool()
-def update_task(task_id: int, title: Optional[str]=None, body: Optional[str]=None, status: Optional[str]=None, assignee: Optional[str]=None,
-                priority: Optional[str]=None, importance: Optional[str]=None) -> dict:
-    """Update a task (e.g. status='done' to complete it)."""
-    return db.update_task(task_id, **{k:v for k,v in dict(title=title, body=body, status=status, assignee=assignee, priority=priority, importance=importance).items() if v is not None})
+
+
 @mcp.tool()
 def delete_task(task_id: int) -> dict:
     """Delete a task."""
@@ -139,6 +119,7 @@ def delete_group_tag(name: str) -> list:
     """Delete a group tag; jobs using it become untagged."""
     return db.delete_group_tag(name)
 
+tool_contracts.register(mcp)
 for _n, _r in [("create_job", R_JOB), ("update_job", R_JOB), ("move_job", R_JOB), ("add_task", R_TASK), ("update_task", R_TASK), ("delete_task", R_TASK)]:
     _t = mcp._tool_manager.get_tool(_n); _t.description = (_t.description or "").strip() + "\n" + _r
 mcp_app = mcp.streamable_http_app()
@@ -177,32 +158,16 @@ def wrap(fn, *a, **k):
     except KeyError as e: raise HTTPException(404, str(e))
     except ValueError as e: raise HTTPException(400, str(e))
 
-class JobIn(BaseModel):
-    title: Optional[str]=None; status: Optional[str]=None; priority: Optional[str]=None; importance: Optional[str]=None
-    assignees: Optional[List[str]]=None; tags: Optional[List[str]]=None; group_tag: Optional[str]=None; conditions: Optional[str]=None; policy: Optional[str]=None
-    note: Optional[str]=None; sort: Optional[float]=None
-    group_tags: Optional[List[str]]=None
-    source: Optional[dict]=None
-    source_history: Optional[List[dict]]=None
-    description: Optional[str]=None; session_urls: Optional[List[str]]=None
-class TaskIn(BaseModel):
-    title: Optional[str]=None; body: Optional[str]=None; status: Optional[str]=None; assignee: Optional[str]=None
-    priority: Optional[str]=None; importance: Optional[str]=None; sort: Optional[float]=None
-    wait_reason: Optional[str]=None; wait_for: Optional[str]=None
-    wait_note: Optional[str]=None; resume_condition: Optional[str]=None
-    source: Optional[dict]=None
-    source_history: Optional[List[dict]]=None
-    description: Optional[str]=None; session_urls: Optional[List[str]]=None
 class AssigneeIn(BaseModel):
     name: str; kind: str="bot"
 
 @app.get("/api/jobs")
-def api_list(status: Optional[str]=None, q: Optional[str]=None, priority: Optional[str]=None, group_tag: Optional[str]=None, group_tags: Optional[List[str]]=Query(None)):
+def api_list(status: Optional[JobStatus]=None, q: Optional[str]=None, priority: Optional[Priority]=None, group_tag: Optional[str]=None, group_tags: Optional[List[str]]=Query(None)):
     return db.list_jobs(status, q, priority, group_tag, group_tags=group_tags)
 @app.post("/api/jobs", status_code=201)
-def api_create(j: JobIn):
+def api_create(j: JobCreate):
     if not j.title: raise HTTPException(400, "title required")
-    return wrap(db.create_job, **j.model_dump(exclude_none=True, exclude={"sort"}))
+    return wrap(db.create_job, **j.model_dump(exclude_unset=True))
 @app.get("/api/jobs/{job_id}")
 def api_get(job_id: int): return wrap(db.get_job, job_id)
 @app.patch("/api/jobs/{job_id}")
@@ -210,11 +175,11 @@ def api_update(job_id: int, j: JobIn): return wrap(db.update_job, job_id, **j.mo
 @app.delete("/api/jobs/{job_id}")
 def api_delete(job_id: int): return wrap(db.delete_job, job_id)
 @app.post("/api/jobs/{job_id}/tasks", status_code=201)
-def api_add_task(job_id: int, t: TaskIn): return wrap(db.add_task, job_id, **t.model_dump(exclude_unset=True, exclude={"sort"}))
+def api_add_task(job_id: int, t: TaskCreate): return wrap(db.add_task, job_id, **t.model_dump(exclude_unset=True))
 @app.patch("/api/tasks/{task_id}")
 def api_update_task(task_id: int, t: TaskIn): return wrap(db.update_task, task_id, **t.model_dump(exclude_unset=True))
 @app.delete("/api/tasks/{task_id}")
-def api_delete_task(task_id: int): return db.delete_task(task_id)
+def api_delete_task(task_id: int): return wrap(db.delete_task, task_id)
 @app.get("/api/assignees")
 def api_assignees(): return db.list_assignees(True)
 @app.get("/api/source_refs")
@@ -227,13 +192,13 @@ def api_markdown(payload: MarkdownIn):
     from markdown_view import render
     return {"html": render(payload.text)}
 @app.post("/api/migrations/dry_run")
-def api_migration_dry_run(payload: dict):
+def api_migration_dry_run(payload: MigrationPayload):
     import migration
-    return wrap(migration.dry_run, payload)
+    return wrap(migration.dry_run, payload.model_dump(exclude_unset=True))
 @app.post("/api/migrations", status_code=201)
-def api_migration_apply(payload: dict):
+def api_migration_apply(payload: MigrationPayload):
     import migration
-    return wrap(migration.apply, payload)
+    return wrap(migration.apply, payload.model_dump(exclude_unset=True))
 @app.get("/api/migrations/{batch_id}")
 def api_migration_get(batch_id: str):
     import migration
@@ -318,4 +283,6 @@ def _ver():
 def index():
     with open(os.path.join(HERE, "static", "index.html"), encoding="utf-8") as source: html = source.read()
     v = _ver(); html = html.replace("static/style.css", f"static/style.css?v={v}").replace("static/app.js", f"static/app.js?v={v}")
+    contract = json.dumps(tool_contracts.schemas(), ensure_ascii=False).replace('<','\\u003c')
+    html = html.replace('<script src="static/app.js', '<script type="application/json" id="tool-schemas">'+contract+'</script><script src="static/app.js')
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})

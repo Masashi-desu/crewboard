@@ -99,7 +99,7 @@ test('WebMCP get_rules uses the same authenticated fetch',async()=>{
  assert.equal(h.prompts(),1);
  assert.equal(h.calls.at(-1).url,'api/rules?format=md');
  assert.equal(h.calls.at(-1).authorization,'Bearer test-api-token');
- assert.equal(h.context.tools.length,17);
+ assert.equal(h.context.tools.length,21);
 });
 
 test('card text and attribute values escape stored XSS payloads',()=>{
@@ -114,4 +114,13 @@ test('card text and attribute values escape stored XSS payloads',()=>{
  assert.ok(html.includes('&quot;alert(1)&quot;'));
  assert.ok(!html.includes('<script>'));
  assert.ok(!html.includes('<img src=x'));
+});
+
+test('unchanged textareas preserve original CRLF and leading or trailing newlines',()=>{
+ const context=vm.createContext({});
+ const line=source.match(/const originalText=.*?;/)[0];
+ vm.runInContext(line+'\nglobalThis.originalText=originalText;',context);
+ const original='\r\n# raw\r\n```code```\r\n';
+ assert.equal(context.originalText(original.replace(/\r\n/g,'\n'),original),original);
+ assert.equal(context.originalText('edited\n',original),'edited\n');
 });

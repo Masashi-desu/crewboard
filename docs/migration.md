@@ -112,3 +112,20 @@ API取り込みはbackup_pathの全ハッシュと、現在DB全テーブルの�
 ドライラン無変更、原文/元履歴一致、AND検索、旧番号照会、同一バッチ再送、
 結果照会、既存ジョブ/タスク無変更と、別ディレクトリへのDB/資産復元を確認。
 移管元の実データを用いた独立照合・履歴完全性確認は未実施（タスク10の範囲）。
+
+## 経路間の契約（task09）
+
+schemas.pyのモデルをRESTとMCPが共有し、同じJSON SchemaをHTMLへ埋め込んでWebMCPへ提供する。
+sortはジョブ/タスクの作成・更新・列移動で受け付け、タスク優先度/重要度も全経路とUIで扱う。
+priority/importanceの既定はnormal。sort昇順、同順位はID昇順。取り込みでは入力順に新IDを採番。
+通常操作のsort省略は末尾、取り込みでは元sortを必須とし、優先度で実施順を書き換えない。
+source/source_historyは作成専用、更新スキーマには含めず422/MCPエラーで拒否する。
+取得はget_jobのsource/source_history、移管先versionとcategory/batch_id付きhistoryで全経路共通。
+不明な項目・enum・不正null・非有限sortを拒否する。assigneeはnullを明示して解除でき、省略なら維持。
+MCP SDKの既定値展開でnullと省略が混ざらないよう、指定されたフィールドのみDBへ渡す。
+元ID対応を維持するため、移管元情報付きジョブ/タスク（またはその親）の完全削除は拒否し、doneで保管する。
+Markdown編集で変更していない本文のCRLF・先頭/末尾改行を保持する。
+ローカルdata/rules.mdがある環境では配信ルールがそちらで上書きされるため、正式反映時に本人が
+差分を確認して統合するかCREWBOARD_RULES_FILEで本リポジトリrules.mdを指定する。本番ファイルは本作業で変更しない。
+コピーのブラウザー表示で待機・未割当・複数タグ・Markdown・元/移管先versionを確認。
+原文を変えずに編集→保存し、APIでCRLF保持と元version維持を確認した。
