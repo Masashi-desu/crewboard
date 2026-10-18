@@ -51,7 +51,7 @@ handle_path /crewboard/* {
 Everything operational lives in the data dir and `.env`, both git-ignored. The repository only contains code, the UI, docs, the default `rules.md` and generic seed data.
 
 ## License
-TBD.
+[MIT](LICENSE) © 2026 Crewboard contributors
 
 ---
 
@@ -63,4 +63,5 @@ Crewboard は、人と AI エージェントが同じボードを見て操作す
 - 初回起動時は汎用サンプルジョブと担当者 2 名（Owner / Agent Bot）が作成されます。
 - サブパス配信（例 `/crewboard/`）は相対パスで対応。リバースプロキシで SSE のためバッファリングを無効化してください（Caddy: `flush_interval -1`）。
 - AI 向け運用ルールは `rules.md`（MCP の instructions・`get_rules`・`GET api/rules` で配信）。
+- ライセンス: MIT（LICENSE）
 - デザインルール: 表示→編集で要素の位置を動かさない（`.v` / `.e` を同じ場所に置き `setEd()` で切替）。
