@@ -76,7 +76,7 @@ source.referencesに明示指定されたuuid/numberのみ対応表で解決し�
 `POST api/migrations/dry_run` は読み取り専用。`POST api/migrations` は同一契約で取り込み、
 `GET api/migrations/{batch_id}` は結果照会。データ中のURLや指示を実行しない。
 
-入力はbatch_id、source_system、jobs配列、assignee_map、group_tag_map、expected_counts、backup_path。
+入力はbatch_id、source_system、jobs配列、assignee_map、group_tag_map、create_group_tags、expected_counts、backup_path。
 jobsは通常フィールドにtasks配列を加える。各ジョブはtitle/status/sort/description/assignees/group_tags/source/tasks、
 各タスクはtitle/status/sort/description/assignee/sourceが必須。
 各sourceはsystem/uuid/numberとcreated_at/updated_at/completed_at/versionを明示する（未知はnull）。
@@ -93,7 +93,18 @@ expected_countsはjobs/tasks/wait/unassigned/historyの全件数。指定しな�
 assignee_mapは `{"旧担当A":"Owner"}` のように全て明示指定（この例を自動適用しない）。
 group_tag_mapは `{"旧タグID":{"name":"旧名","target":"登録済み名"}}`、ジョブのgroup_tagsは旧タグID配列。
 未割当null/空文字はそのまま。旧タグID・名前・明示対応はsource_master_mappingsへ永続保存。
-マスタを勝手に追加・改名・上書きしない。原入力と変換結果はmigration_itemsへ保存する。
+マスタはバッチで明示宣言されたタグだけ新規作成できる。改名・既存値の上書きはしない。
+原入力と変換結果はmigration_itemsへ保存する。
+
+`create_group_tags: [{"name":"TagA"},{"name":"TagB","color":"#3b82f6"}]` で作成を明示宣言する。
+group_tag_mapのtargetは既存マスタまたはこの宣言の名前に完全一致する必要がある。
+宣言名は空白・大文字小文字・Unicodeを曖昧に補正せず、前後空白は拒否する。
+同内容の重複宣言は1件にまとめ、同名で内容が異なる宣言は拒否する。
+同名既存タグは再利用し、color省略時は既存色を保持。明示色が既存と違う場合は中止する。
+新規タグのcolor省略は空色。ドライランのgroup_tags.create/reuseに作成/再利用予定を返し、DBは変更しない。
+実際のタグ作成は、バックアップ照合後の取り込みトランザクション内で行う。
+レコード挿入・照合に失敗すればタグもロールバックし、再送・新バッチ再実行でも同名タグを増やさない。
+タグ追加の通知はコミット後だけ発行する。事前に本番へタグを登録する必要はない。
 
 BEGIN IMMEDIATE内で全件を挿入・全フィールドと外部キーを照合後、台帳とともに一括コミットする。
 構築中は通常作成APIの自動完了/再開を呼ばず、元状態とsortを保存。同順位は入力順に採番したID順。

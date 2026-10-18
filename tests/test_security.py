@@ -460,11 +460,94 @@ class MigrationTests(unittest.TestCase):
         for key,value in fields.items(): self.assertEqual(saved[key],value)
         self.assertEqual(saved['status'],'wait')
 
-    def migration_payload(self, batch_id="batch-1"):
+    def test_declared_tags_are_reported_readonly_and_created_with_import(self):
+        import backup, migration, tool_contracts
+        payload=self.migration_payload('declare-tags',register_tags=False)
+        payload['create_group_tags']=[dict(name='TagA',color='#ff9900'),dict(name='TagB')]
+        with db.conn() as c: before=backup.fingerprint(c)
+        response=client.post('/api/migrations/dry_run',headers=self.headers,json=payload)
+        self.assertEqual(response.status_code,200,response.text)
+        report=response.json()
+        self.assertEqual(report['status'],'valid',report)
+        self.assertEqual(report['group_tags'],dict(create=[dict(name='TagA',color='#ff9900'),dict(name='TagB',color='')],reuse=[]))
+        with db.conn() as c: self.assertEqual(backup.fingerprint(c),before)
+        self.migration_backup(payload)
+        with patch.object(migration.config,'MIGRATION_ENABLED',True), patch.object(db,'_emit') as emitted:
+            response=client.post('/api/migrations',headers=self.headers,json=payload)
+        self.assertEqual(response.status_code,201,response.text)
+        saved=db.get_job(response.json()['ids'][0]['new_id'])
+        self.assertEqual(saved['group_tags'],['TagA','TagB'])
+        self.assertTrue(any(call.args[0]['scope']=='master' for call in emitted.call_args_list))
+        schema=tool_contracts.schemas()['import_migration']
+        self.assertIn('create_group_tags',schema['$defs']['MigrationPayload']['properties'])
+
+    def test_tag_creation_is_rolled_back_with_failed_records(self):
+        import backup, migration
+        payload=self.migration_payload('atomic-tags',register_tags=False)
+        payload['create_group_tags']=[dict(name='TagA'),dict(name='TagB')]
+        self.migration_backup(payload)
+        with db.conn() as c: before=backup.fingerprint(c)
+        with patch.object(migration.config,'MIGRATION_ENABLED',True):
+            with patch.object(migration,'_insert',side_effect=RuntimeError('interrupted')), patch.object(db,'_emit') as emitted:
+                with self.assertRaises(RuntimeError): migration.apply(payload)
+                emitted.assert_not_called()
+            with db.conn() as c: self.assertEqual(backup.fingerprint(c),before)
+            self.assertEqual(migration.apply(payload)['status'],'completed')
+        self.assertEqual({g['name'] for g in db.list_group_tags()},{'サンプル','TagA','TagB'})
+
+    def test_declared_existing_tags_are_reused_without_overwrite_on_retries(self):
+        import migration
+        payload=self.migration_payload('reuse-tags',register_tags=False)
+        db.add_group_tag('TagA','#abc')
+        payload['create_group_tags']=[dict(name='TagA'),dict(name='TagB'),dict(name='TagB')]
+        report=migration.dry_run(payload)
+        self.assertEqual(report['status'],'valid')
+        self.assertEqual(report['group_tags']['reuse'],[dict(name='TagA',color='#abc')])
+        self.assertEqual(report['group_tags']['create'],[dict(name='TagB',color='')])
+        self.migration_backup(payload)
+        with patch.object(migration.config,'MIGRATION_ENABLED',True):
+            first=migration.apply(payload)
+            with db.conn() as c: tags=[tuple(r) for r in c.execute('SELECT * FROM group_tags ORDER BY name')]
+            self.assertEqual(migration.apply(payload),first)
+            payload['batch_id']='reuse-tags-new-batch'
+            self.migration_backup(payload,'new-batch-tags')
+            result=migration.apply(payload)
+            self.assertEqual(result['group_tags']['create'],[])
+            self.assertEqual(result['skip'],3)
+            with db.conn() as c: self.assertEqual([tuple(r) for r in c.execute('SELECT * FROM group_tags ORDER BY name')],tags)
+
+    def test_invalid_tag_declarations_and_undeclared_targets_never_write(self):
+        import backup, copy, migration
+        payload=self.migration_payload('bad-tags',register_tags=False)
+        db.add_group_tag('TagA','#abc')
+        with db.conn() as c: before=backup.fingerprint(c)
+        cases=([dict(name='TagA',color='#def'),dict(name='TagB')],
+               [dict(name='TagB'),dict(name='TagB',color='#fff')],
+               [dict(name=' TagA'),dict(name='TagB')], [dict(name='TagA')],
+               [dict(name='TagB',extra='ignored')])
+        for declarations in cases:
+            with self.subTest(declarations=declarations):
+                candidate=copy.deepcopy(payload); candidate['create_group_tags']=declarations
+                self.assertEqual(migration.dry_run(candidate)['status'],'invalid')
+                with patch.object(migration.config,'MIGRATION_ENABLED',True), self.assertRaises(ValueError): migration.apply(candidate)
+                with db.conn() as c: self.assertEqual(backup.fingerprint(c),before)
+
+    def test_concurrent_tag_declaration_retries_create_one_master_per_name(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import migration
+        payload=self.migration_payload('concurrent-tags',register_tags=False)
+        payload['create_group_tags']=[dict(name='TagA'),dict(name='TagB')]
+        self.migration_backup(payload)
+        with patch.object(migration.config,'MIGRATION_ENABLED',True), ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(lambda _:migration.apply(payload),range(2)))
+        self.assertEqual(results[0],results[1])
+        self.assertEqual(len(db.list_group_tags()),3)
+
+    def migration_payload(self, batch_id="batch-1", register_tags=True):
         def source(uid,number):
             return dict(system="old",uuid=uid,number=number,created_at="2020-01-01T00:00:00+09:00",
                         updated_at="2020-02-01T00:00:00Z",completed_at=None,version=7)
-        db.add_group_tag("TagA"); db.add_group_tag("TagB")
+        if register_tags: db.add_group_tag("TagA"); db.add_group_tag("TagB")
         return dict(batch_id=batch_id,source_system="old",assignee_map={"旧担当A":"Owner"},
             group_tag_map={"g1":dict(name="TagA",target="TagA"),"g2":dict(name="TagB",target="TagB")},
             jobs=[dict(title="imported",status="ready",sort=3.5,description="# original\r\n",assignees=["旧担当A"],

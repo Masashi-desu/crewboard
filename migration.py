@@ -39,7 +39,7 @@ def get_batch(batch_id):
 
 def _prepare(c, payload):
     if not isinstance(payload, dict): raise ValueError('migration payload must be an object')
-    allowed = {'batch_id','source_system','jobs','assignee_map','group_tag_map','expected_counts','backup_path'}
+    allowed = {'batch_id','source_system','jobs','assignee_map','group_tag_map','create_group_tags','expected_counts','backup_path'}
     if set(payload) - allowed: raise ValueError('unknown migration fields: '+str(sorted(set(payload)-allowed)))
     for field in ('batch_id','source_system'):
         if not isinstance(payload.get(field), str) or not payload[field].strip(): raise ValueError(field+' required')
@@ -48,6 +48,30 @@ def _prepare(c, payload):
     system = payload['source_system']
     known_assignees = {r[0] for r in c.execute('SELECT name FROM assignees')}
     known_tags = {r[0] for r in c.execute('SELECT name FROM group_tags')}
+    tag_plan = dict(create=[], reuse=[])
+    declarations = payload.get('create_group_tags', [])
+    if not isinstance(declarations,list): raise ValueError('create_group_tags must be an array')
+    declared = {}
+    for spec in declarations:
+        if not isinstance(spec,dict) or set(spec)-{'name','color'}:
+            errors.append('group tag declaration requires name and optional color'); continue
+        name = spec.get('name')
+        if not isinstance(name,str) or not name.strip() or name != name.strip():
+            errors.append('declared group tag name must be nonempty without surrounding whitespace'); continue
+        if 'color' in spec and not isinstance(spec['color'],str):
+            errors.append('declared group tag color must be a string'); continue
+        if name in declared:
+            if declared[name] != spec: errors.append('conflicting group tag declarations: '+name)
+            continue
+        declared[name] = spec
+        existing = c.execute('SELECT color FROM group_tags WHERE name=?',(name,)).fetchone()
+        if existing:
+            if 'color' in spec and spec['color'] != existing['color']:
+                errors.append('existing group tag color conflict: '+name)
+            tag_plan['reuse'].append(dict(name=name,color=existing['color']))
+        else:
+            tag_plan['create'].append(dict(name=name,color=spec.get('color','')))
+        known_tags.add(name)
     assignee_map, tag_map = payload.get('assignee_map', {}), payload.get('group_tag_map', {})
     if not isinstance(assignee_map, dict) or not isinstance(tag_map, dict): raise ValueError('mapping objects required')
 
@@ -171,7 +195,7 @@ def _prepare(c, payload):
                   history=sum(len(i['target'].get('source_history',[])) for i in items))
     if 'expected_counts' in payload and payload['expected_counts'] != counts: errors.append('expected_counts mismatch')
     report = dict(status='invalid' if errors else 'valid', batch_id=payload['batch_id'], errors=errors,warnings=warnings,
-                  counts=counts, create=sum(not i['skip'] for i in items),skip=sum(i['skip'] for i in items))
+                  counts=counts, create=sum(not i['skip'] for i in items),skip=sum(i['skip'] for i in items),group_tags=tag_plan)
     return report,items,mappings
 
 
@@ -227,6 +251,9 @@ def apply(payload):
         if manifest['assets'] != backup.assets(Path(db.DB).resolve().parent): raise ValueError('assets changed since backup')
         batch_id = payload['batch_id']
         c.execute('INSERT INTO migration_batches VALUES(?,?,?,?,?,?)',(batch_id,request_hash,'building',canonical(payload),'{}',db.now()))
+        for tag in report['group_tags']['create']:
+            c.execute('INSERT INTO group_tags(name,color,sort) VALUES(?,?,(SELECT COALESCE(MAX(sort),0)+1 FROM group_tags))',
+                      (tag['name'],tag['color']))
         parents,ids = {},[]
         for current in items:
             entity_id = _insert(c,current,parents)
@@ -250,4 +277,5 @@ def apply(payload):
         for job_id in dict.fromkeys(parents.values()): db.migration_audit(c,job_id,batch_id,'一括取り込み・照合完了')
         c.execute("UPDATE migration_batches SET status='completed',result=? WHERE batch_id=?",(canonical(result),batch_id))
     db._emit(dict(type='migration',scope='job',job_ids=list(parents.values())))
+    if report['group_tags']['create']: db._emit(dict(type='migration_tags',scope='master',job_ids=[]))
     return result

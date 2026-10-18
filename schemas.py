@@ -146,6 +146,11 @@ class TagMapping(StrictIn):
     target: str
 
 
+class GroupTagDeclaration(StrictIn):
+    name: str = Field(min_length=1)
+    color: str = Field(default=None, description='省略時は既存の色を保持。新規タグは空色。')
+
+
 class ExpectedCounts(StrictIn):
     jobs: int = Field(ge=0)
     tasks: int = Field(ge=0)
@@ -160,6 +165,8 @@ class MigrationPayload(StrictIn):
     jobs: list[MigrationJob]
     assignee_map: dict[str,str] = Field(default_factory=dict)
     group_tag_map: dict[str,TagMapping] = Field(default_factory=dict)
+    create_group_tags: list[GroupTagDeclaration] = Field(default_factory=list,
+        description='このバッチで作成を許可するグループタグ。同名既存タグは上書きしない。')
     expected_counts: ExpectedCounts = Field(default=None)
     backup_path: str = Field(default=None)
 
