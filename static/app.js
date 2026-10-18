@@ -5,7 +5,20 @@ const $=(s,r=document)=>r.querySelector(s), esc=s=>String(s??'').replace(/[&<>"'
 const av=(n,cls='av')=>{const a=S.assignees.find(x=>x.name===n);return a&&a.icon?`<img class="${cls}" src="${esc(String(a.icon).replace(/^\//,''))}" alt="" aria-hidden="true" loading="lazy">`:'';};
 const setEd=(el,on)=>{el.classList.toggle('editing',on);el.querySelectorAll('.v').forEach(x=>x.hidden=on);el.querySelectorAll('.e').forEach(x=>x.hidden=!on);};
 const pad=n=>String(n).padStart(4,'0'), two=n=>String(n).padStart(2,'0');
-async function api(p,o={}){const r=await fetch('api'+p,{headers:{'content-type':'application/json'},...o,body:o.body?JSON.stringify(o.body):undefined});
+const API_AUTH={token:'',prompted:false};
+try{API_AUTH.token=localStorage.getItem('crewboard-api-token')||'';}catch(e){}
+async function apiFetch(url,o={}){
+ const attempted=API_AUTH.token;
+ const send=()=>{const headers=new Headers(o.headers);if(API_AUTH.token)headers.set('Authorization','Bearer '+API_AUTH.token);return fetch(url,{...o,headers});};
+ let r=await send();
+ if(r.status===401){
+  if(!API_AUTH.prompted){API_AUTH.prompted=true;const token=window.prompt('Crewboard API トークンを入力してください');
+   if(token&&token.trim()){API_AUTH.token=token.trim();try{localStorage.setItem('crewboard-api-token',API_AUTH.token);}catch(e){}}}
+  if(API_AUTH.token&&API_AUTH.token!==attempted){r=await send();if(LIVE.es)liveConnect();}
+ }
+ return r;
+}
+async function api(p,o={}){const r=await apiFetch('api'+p,{headers:{'content-type':'application/json'},...o,body:o.body?JSON.stringify(o.body):undefined});
   if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.status);return r.json();}
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),1600);}
 function copy(text,msg='コピーしました'){navigator.clipboard?.writeText(text).then(()=>toast(msg),()=>toast(text));}
@@ -169,7 +182,7 @@ const tool=(name,description,props,req,fn,ro)=>({name,description,inputSchema:{t
  async execute(a){try{const r=await fn(a||{});if(!ro)await load();return ok(r);}catch(e){return {content:[{type:'text',text:'Error: '+e.message}],isError:true};}}});
 const R_JOB='ルール: status は wait(着手不可/待ち)/ready(着手可)/run(進行中)/done(完了→完了履歴)。priority low|normal|high|urgent, importance low|normal|high。group_tag はマスタ登録済みのみ。自動完了: 全タスクが完了するとジョブは自動で done になる（自分でジョブのステータスを変える必要はない）。done のジョブに未完了タスクが生じる（タスクを todo/doing に戻す・未完了タスクを追加）と自動で run に戻る。詳細は get_rules。',R_TASK='ルール: タスクは上から順に実行（先頭の未完了タスクの担当=現在の担当）。title必須・body任意。assignee はマスタ(list_assignees)の名前が必須。完了は status=done。全タスクが完了するとジョブは自動で done になる（自分でジョブのステータスを変える必要はない）。done のジョブに未完了タスクが生じる（タスクを todo/doing に戻す・未完了タスクを追加）と自動で run に戻る。詳細は get_rules。';
 const WEBMCP_TOOLS=[
- tool('get_rules','Crewboard の運用ルール（日本語 Markdown）。操作前に一度読むこと',{},[],()=>fetch('api/rules?format=md').then(r=>r.text()),true),
+ tool('get_rules','Crewboard の運用ルール（日本語 Markdown）。操作前に一度読むこと',{},[],()=>apiFetch('api/rules?format=md').then(r=>{if(!r.ok)throw new Error(r.status);return r.text();}),true),
  tool('list_jobs','ジョブ一覧（タスク含む。current_assignee=先頭の未完了タスクの担当）。status: wait|ready|run|done',{status:{type:'string',enum:['wait','ready','run','done']},query:{type:'string'}},[],a=>api('/jobs?'+new URLSearchParams(Object.entries({status:a.status||'',q:a.query||''}).filter(e=>e[1]))),true),
  tool('get_job','ジョブ詳細（タスク本文・履歴含む）',{job_id:{type:'integer'}},['job_id'],a=>api('/jobs/'+a.job_id),true),
  tool('create_job','ジョブを作成。conditions=完了条件, policy=方針, note=その他\n'+R_JOB,{title:{type:'string'},status:{type:'string',enum:['wait','ready','run']},priority:P4,importance:L3,tags:{type:'array',items:{type:'string'}},group_tag:{type:'string'},conditions:{type:'string'},policy:{type:'string'},note:{type:'string'}},['title'],a=>api('/jobs',{method:'POST',body:a})),
@@ -191,7 +204,6 @@ const WEBMCP_TOOLS=[
 (function registerWebMCP(){const mc=navigator.modelContext;window.__jobBoardTools=WEBMCP_TOOLS.map(t=>t.name);if(!mc)return;
  try{if(typeof mc.provideContext==='function')mc.provideContext({tools:WEBMCP_TOOLS});
   else if(typeof mc.registerTool==='function')WEBMCP_TOOLS.forEach(t=>mc.registerTool(t));document.documentElement.dataset.webmcp='on';}catch(e){console.warn('WebMCP registration failed',e);}})();
-load();
 
 /* ---- three.js 3D stack for matrix cells with multiple jobs (fallback: CSS overlap) ---- */
 let STACKS=[], THREE=null;
@@ -229,10 +241,13 @@ async function liveFlush(){
   else route();                                   // board/matrix/完了履歴/仮タスク from S (no reload)
   scrollTo(0,y);
  }catch(e){LIVE.pend.unshift(...evs);LIVE.full||=full;LIVE.t=setTimeout(liveFlush,3000);}}
-function liveConnect(){if(!window.EventSource)return;try{LIVE.es&&LIVE.es.close();}catch(e){}
- const es=LIVE.es=new EventSource('api/events');
+async function liveConnect(){if(!window.EventSource)return;
+ // EventSource hides HTTP status codes; probe with fetch so a 401 can prompt once.
+ try{const r=await apiFetch('api/rules');if(!r.ok)return;}catch(e){return;}
+ try{LIVE.es&&LIVE.es.close();}catch(e){}
+ const es=LIVE.es=new EventSource('api/events'+(API_AUTH.token?'?token='+encodeURIComponent(API_AUTH.token):''));
  es.addEventListener('change',e=>{try{liveQueue(JSON.parse(e.data));}catch(x){}});
  es.onopen=()=>{if(LIVE.lost){LIVE.lost=false;LIVE.full=true;liveQueue({type:'resync',scope:'job',job_ids:[]});}};
  es.onerror=()=>{LIVE.lost=true;if(es.readyState===EventSource.CLOSED)setTimeout(()=>{if(LIVE.es===es)liveConnect();},5000);};}
-liveConnect();
+load().then(liveConnect).catch(e=>toast(e.message));
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&LIVE.es&&LIVE.es.readyState===EventSource.CLOSED)liveConnect();});

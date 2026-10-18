@@ -28,13 +28,18 @@ avatars.set_icon = _set_icon
 import config
 HERE = config.HERE
 TOKEN = config.MCP_TOKEN
-def rules_text(): return open(config.rules_path(), encoding="utf-8").read()
+API_TOKEN = config.API_TOKEN
+def rules_text():
+    with open(config.rules_path(), encoding="utf-8") as source: return source.read()
 R_JOB = "ルール: status は wait(着手不可/待ち)/ready(着手可)/run(進行中)/done(完了→完了履歴)。priority low|normal|high|urgent, importance low|normal|high。group_tag はマスタ登録済みのみ。自動完了: 全タスクが完了するとジョブは自動で done になる（自分でジョブのステータスを変える必要はない）。done のジョブに未完了タスクが生じる（タスクを todo/doing に戻す・未完了タスクを追加）と自動で run に戻る。詳細は get_rules。"
 R_TASK = "ルール: タスクは上から順に実行（先頭の未完了タスクの担当=現在の担当）。title必須・body任意。assignee はマスタ(list_assignees)の名前が必須。完了は status=done。全タスクが完了するとジョブは自動で done になる（自分でジョブのステータスを変える必要はない）。done のジョブに未完了タスクが生じる（タスクを todo/doing に戻す・未完了タスクを追加）と自動で run に戻る。詳細は get_rules。"
 db.init()
 
 mcp = FastMCP("crewboard", stateless_http=True, streamable_http_path="/",
-              transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+              transport_security=TransportSecuritySettings(
+                  enable_dns_rebinding_protection=bool(config.ALLOWED_HOSTS),
+                  allowed_hosts=config.ALLOWED_HOSTS,
+                  allowed_origins=[f"{scheme}://{host}" for host in config.ALLOWED_HOSTS for scheme in ("http", "https")]),
               instructions="Crewboard: a job board that humans and AI agents both view and operate (Japanese UI). Read the operating rules first via get_rules or resource crewboard://rules.\n\n" + rules_text())
 @mcp.resource("crewboard://rules", name="rules", description="Crewboard 運用ルール（日本語）", mime_type="text/markdown")
 def rules_resource() -> str:
@@ -148,10 +153,20 @@ def docs(): return get_swagger_ui_html(openapi_url="openapi.json", title="Crewbo
 
 @app.middleware("http")
 async def mcp_auth(request: Request, call_next):
+    def authorized(token):
+        return bool(token) and secrets.compare_digest(
+            request.headers.get("authorization", "").encode(), f"Bearer {token}".encode())
     if request.url.path.startswith("/mcp"):
-        auth = request.headers.get("authorization", "")
-        if not (TOKEN and secrets.compare_digest(auth, f"Bearer {TOKEN}")):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        allowed = authorized(TOKEN)
+    elif API_TOKEN and (request.url.path == "/api" or request.url.path.startswith("/api/")):
+        allowed = authorized(API_TOKEN)
+        if request.method == "GET" and request.url.path == "/api/events":
+            allowed = allowed or secrets.compare_digest(request.query_params.get("token", "").encode(), API_TOKEN.encode())
+    else:
+        allowed = True
+    if not allowed:
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"})
     resp = await call_next(request)
     if request.url.path.startswith(("/static", "/api")): resp.headers["Cache-Control"] = "no-cache"
     return resp
@@ -208,14 +223,21 @@ class TagIn(BaseModel):
 def api_upd_assignee(name: str, u: MasterUpd): return wrap(db.update_assignee, name, u.new_name, u.kind)
 @app.put("/api/assignees/{name}/icon")
 async def api_set_icon(name: str, request: Request):
-    """Body: raw image bytes (Content-Type image/*) or JSON {"data_base64": "..."} / {"url": "https://..."}."""
+    """Body: raw image bytes or JSON {"data_base64": "..."} / {"url": "https://example.com/avatar.png"}."""
     ct = request.headers.get("content-type", "")
+    limit = 4 * ((avatars.MAX_BYTES + 2) // 3) + 4096 if ct.startswith("application/json") else avatars.MAX_BYTES
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > limit: raise HTTPException(413, "image request too large (max 5MB image)")
+        body.extend(chunk)
     if ct.startswith("application/json"):
-        b = IconIn(**(await request.json()))
-        raw = avatars.decode_b64(b.data_base64) if b.data_base64 else avatars.fetch_url(b.url) if b.url else None
-        if raw is None: raise HTTPException(400, "data_base64 or url required")
-    else: raw = await request.body()
-    return wrap(avatars.set_icon, name, raw)
+        b = wrap(IconIn.model_validate_json, bytes(body))
+        if b.data_base64: raw = wrap(avatars.decode_b64, b.data_base64)
+        elif b.url: raw = await asyncio.to_thread(wrap, avatars.fetch_url, b.url)
+        else: raise HTTPException(400, "data_base64 or url required")
+    else:
+        raw = bytes(body)
+    return await asyncio.to_thread(wrap, avatars.set_icon, name, raw)
 @app.delete("/api/assignees/{name}/icon")
 def api_rm_icon(name: str): return wrap(avatars.set_icon, name, None)
 @app.delete("/api/assignees/{name}")
@@ -263,6 +285,6 @@ def _ver():
     return str(int(max(os.path.getmtime(os.path.join(HERE, "static", f)) for f in ("app.js", "style.css"))))
 @app.get("/")
 def index():
-    html = open(os.path.join(HERE, "static", "index.html"), encoding="utf-8").read()
+    with open(os.path.join(HERE, "static", "index.html"), encoding="utf-8") as source: html = source.read()
     v = _ver(); html = html.replace("static/style.css", f"static/style.css?v={v}").replace("static/app.js", f"static/app.js?v={v}")
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
