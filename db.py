@@ -44,6 +44,7 @@ def default_assignee():
     return r[0] if r else ""
 
 def seed(c):
+    c.execute("INSERT OR IGNORE INTO group_tags(name) VALUES(?)", ("サンプル",))
     S = [("【サンプル】優先度と重要度から取り組む順を判断できるようにする","wait","normal","high",["Crewboard"],
           "優先度と重要度を設定でき、カンバンで確認できる。","既存データを壊さずに列を追加する。","これはサンプルです。",
           [("重要度の保存とAPI","done","Agent Bot"),("ボード表示","done","Agent Bot"),("実ブラウザで確認","doing","Owner"),("画面サイズ追従","todo","Agent Bot")]),
@@ -93,14 +94,17 @@ def _check(f, v):
     if f=="priority" and v not in PRIORITIES: raise ValueError(f"priority must be one of {PRIORITIES}")
     if f=="importance" and v not in LEVELS: raise ValueError(f"importance must be one of {LEVELS}")
 
-def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note=""):
+def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None):
     for f,v in (("status",status),("priority",priority),("importance",importance)): _check(f,v)
     if group_tag and group_tag not in [g["name"] for g in list_group_tags()]: raise ValueError("unknown group_tag; register it with add_group_tag")
+    assignees = assignees or []
+    known = {a["name"] for a in list_assignees()}
+    if any(name not in known for name in assignees): raise ValueError("unknown assignee; see list_assignees")
     t = now()
     with conn() as c:
         mx = c.execute("SELECT COALESCE(MAX(sort),0)+1 FROM jobs").fetchone()[0]
-        cur = c.execute("INSERT INTO jobs(title,status,priority,importance,tags,group_tag,conditions,policy,note,sort,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (title,status,priority,importance,json.dumps(tags or [],ensure_ascii=False),group_tag,conditions,policy,note,mx,t,t))
+        cur = c.execute("INSERT INTO jobs(title,status,priority,importance,tags,group_tag,conditions,policy,note,assignees,sort,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (title,status,priority,importance,json.dumps(tags or [],ensure_ascii=False),group_tag,conditions,policy,note,json.dumps(assignees,ensure_ascii=False),mx,t,t))
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(cur.lastrowid,t,"作成"))
         jid = cur.lastrowid
     return get_job(jid)
