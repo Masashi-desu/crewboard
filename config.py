@@ -32,6 +32,7 @@ MCP_TOKEN = os.environ.get("CREWBOARD_MCP_TOKEN") or os.environ.get("JOB_BOARD_M
 API_TOKEN = os.environ.get("CREWBOARD_API_TOKEN") or ""
 ALLOWED_HOSTS = [host.strip() for host in os.environ.get("CREWBOARD_ALLOWED_HOSTS", "").split(",") if host.strip()]
 DB_PATH = os.path.join(DATA_DIR, "jobs.db")
+MIGRATION_ENABLED = os.environ.get("CREWBOARD_MIGRATION_ENABLED", "") == "1"
 AVATAR_DIR = os.path.join(DATA_DIR, "avatars")
 def rules_path():
     p = os.environ.get("CREWBOARD_RULES_FILE")

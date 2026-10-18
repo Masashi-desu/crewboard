@@ -33,6 +33,7 @@ On first start an empty data dir is created and seeded with generic sample jobs 
 | `CREWBOARD_HOST` / `CREWBOARD_PORT` | `127.0.0.1` / `8090` | used by `run.py` |
 | `CREWBOARD_BASE_PATH` | empty | public sub-path when behind a prefix-stripping proxy (e.g. `/crewboard`) |
 | `CREWBOARD_RULES_FILE` | `<data>/rules.md` if present, else `rules.md` | operating rules |
+| `CREWBOARD_MIGRATION_ENABLED` | empty | Set `1` only on an isolated copy to enable migration writes; dry-run is always available |
 
 The UI uses only relative URLs, so it works at the root or under any sub-path. Example Caddy config:
 ```
@@ -60,6 +61,8 @@ handle_path /crewboard/* {
 - Uploaded avatars are decoded and converted to 128px WebP; inputs are limited to 5 MiB and 16 megapixels. SVG requires optional CairoSVG plus native Cairo; without them it returns a descriptive 400. External SVG resources are disabled.
 
 ## Tests
+Migration contract, additive schema, backup/restore and copy-environment procedure: [docs/migration.md](docs/migration.md).
+For pytest, install `requirements-dev.txt` and run `python -m pytest tests/ -q`.
 With dependencies installed, run `python -m unittest discover -s tests -v`. The suite uses temporary data directories, a disposable local server, and test-only tokens; it never writes the normal `data/` or `.env`.
 
 UI authentication tests require Node.js: `node --test tests/test_ui_auth.cjs`.

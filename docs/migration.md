@@ -61,3 +61,54 @@ jobs/tasksへdescriptionとsession_urls（JSON配列）を加算。既存conditi
 関連セッションURLはHTTP(S)文字列の配列。保存中にURLへアクセスしない。
 source.referencesに明示指定されたuuid/numberのみ対応表で解決し、UIにリンクまたは未解決を表示。
 例示・通常のIssue番号から参照や依存エッジを推測しない。元本文自体は書き換えない。
+
+## 一括取り込み（task08）
+
+既定では書き込み不可。隔離環境だけ `CREWBOARD_MIGRATION_ENABLED=1` を設定する。
+`POST api/migrations/dry_run` は読み取り専用。`POST api/migrations` は同一契約で取り込み、
+`GET api/migrations/{batch_id}` は結果照会。データ中のURLや指示を実行しない。
+
+入力はbatch_id、source_system、jobs配列、assignee_map、group_tag_map、expected_counts、backup_path。
+jobsは通常フィールドにtasks配列を加える。各ジョブはtitle/status/sort/description/assignees/group_tags/source/tasks、
+各タスクはtitle/status/sort/description/assignee/sourceが必須。
+各sourceはsystem/uuid/numberとcreated_at/updated_at/completed_at/versionを明示する（未知はnull）。
+省略時normalとなるpriority/importance、空配列となるsource_history/session_urlsはドライランで報告する。
+未対応項目・未解決担当/タグ/明示参照・履歴関連・重複UUID/履歴ID・件数不一致は中止する。
+expected_countsはjobs/tasks/wait/unassigned/historyの全件数。指定しない場合も予定件数を返す。
+
+assignee_mapは `{"旧担当A":"Owner"}` のように全て明示指定（この例を自動適用しない）。
+group_tag_mapは `{"旧タグID":{"name":"旧名","target":"登録済み名"}}`、ジョブのgroup_tagsは旧タグID配列。
+未割当null/空文字はそのまま。旧タグID・名前・明示対応はsource_master_mappingsへ永続保存。
+マスタを勝手に追加・改名・上書きしない。原入力と変換結果はmigration_itemsへ保存する。
+
+BEGIN IMMEDIATE内で全件を挿入・全フィールドと外部キーを照合後、台帳とともに一括コミットする。
+構築中は通常作成APIの自動完了/再開を呼ばず、元状態とsortを保存。同順位は入力順に採番したID順。
+途中エラーは台帳・行・履歴・対応表を全てロールバック。同一バッチIDの同内容は保存済み結果を返す。
+別バッチで同じ元UUIDは取り込み済み原入力/変換ハッシュ一致のみskipし、不一致は既存を変更せず中止。
+同じバッチIDの異なる内容は拒否。backup_pathだけは内容ハッシュに含めない。
+結果不明時はまずGETで照会し、completedなら保存結果を利用。404ならコミットされていないため、
+ドライランとバックアップ整合を再確認して同じbatch_id・同じ内容を再送する。盲目的に新IDでPOSTしない。
+
+### バックアップと復元
+
+`python backup.py create --source <data-dir> --destination <新規snapshot-dir>` はSQLiteのオンラインbackup APIで
+WALの確定済み内容を含む整合DBを読み取り専用接続から取得し、資産とrules.mdをコピーする。
+前後の資産ハッシュ一致・DB integrity_check・参照アバター存在を検証しmanifest.jsonを作成。
+資産変化中は失敗するので未完の退避先を運用担当が破棄/隔離し新しい退避先で再試行する。
+ログとSQLiteのwal/shmはバックアップに含めない。元DB・資産を変更しない。
+API取り込みはbackup_pathの全ハッシュと、現在DB全テーブルの論理fingerprint・資産一致を
+書き込みロック内で確認する。退避後に他の更新があれば新しいスナップショットが必要。
+資産を変更する運用は取り込み中に行わない。旧MacのAPI論理退避はこのDBバックアップの代わりにならない。
+
+`python backup.py verify --source <snapshot-dir>` で検証し、
+`python backup.py restore --source <snapshot-dir> --destination <新規data-dir>` で新規領域へ復元する。
+既存ディレクトリへの上書きは不可。復元後は公式run.pyを新しいCREWBOARD_DATA_DIRで起動して照合する。
+本番停止・切替・実データ移管は本実装に含まない。独立した全データ/資産復元検証はタスク10で行う。
+
+### 実装時のコピー環境確認
+
+コピー環境（件数は実施時点の基準を再取得）で既存項目・マスタの一致を確認後、
+合成1ジョブ/1タスク（wait・未割当各1、元履歴1、複数タグ）だけを追加した。
+ドライラン無変更、原文/元履歴一致、AND検索、旧番号照会、同一バッチ再送、
+結果照会、既存ジョブ/タスク無変更と、別ディレクトリへのDB/資産復元を確認。
+移管元の実データを用いた独立照合・履歴完全性確認は未実施（タスク10の範囲）。

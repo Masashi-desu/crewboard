@@ -226,6 +226,18 @@ class MarkdownIn(BaseModel):
 def api_markdown(payload: MarkdownIn):
     from markdown_view import render
     return {"html": render(payload.text)}
+@app.post("/api/migrations/dry_run")
+def api_migration_dry_run(payload: dict):
+    import migration
+    return wrap(migration.dry_run, payload)
+@app.post("/api/migrations", status_code=201)
+def api_migration_apply(payload: dict):
+    import migration
+    return wrap(migration.apply, payload)
+@app.get("/api/migrations/{batch_id}")
+def api_migration_get(batch_id: str):
+    import migration
+    return wrap(migration.get_batch, batch_id)
 class AssignIn(BaseModel):
     assignees: List[str]
 @app.put("/api/jobs/{job_id}/assignees")

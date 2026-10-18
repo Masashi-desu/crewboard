@@ -372,6 +372,143 @@ class MigrationTests(unittest.TestCase):
         self.assertFalse(job["resolved_references"][1]["resolved"])
         self.assertEqual(db.create_job("plain", description="#0001")["resolved_references"], [])
 
+    def migration_payload(self, batch_id="batch-1"):
+        def source(uid,number):
+            return dict(system="old",uuid=uid,number=number,created_at="2020-01-01T00:00:00+09:00",
+                        updated_at="2020-02-01T00:00:00Z",completed_at=None,version=7)
+        db.add_group_tag("TagA"); db.add_group_tag("TagB")
+        return dict(batch_id=batch_id,source_system="old",assignee_map={"旧担当A":"Owner"},
+            group_tag_map={"g1":dict(name="TagA",target="TagA"),"g2":dict(name="TagB",target="TagB")},
+            jobs=[dict(title="imported",status="ready",sort=3.5,description="# original\r\n",assignees=["旧担当A"],
+                group_tags=["g1","g2"],source=source("j1","#0001"),session_urls=["https://example.com/session"],
+                source_history=[dict(id="h1",occurred_at="2020-01-01T00:00:00+09:00",job_uuid="j1",task_uuid="t1",recorder=None,source="mcp")],
+                tasks=[dict(title="blocked",status="wait",sort=0,description="raw\n",assignee=None,wait_reason="承認",wait_for="旧担当A",wait_note="補足",resume_condition="承認後",source=source("t1","#0001-01")),
+                       dict(title="next",status="todo",sort=0,description="second",assignee="旧担当A",priority="high",importance="low",source=source("t2","#0001-02"))])],
+            expected_counts=dict(jobs=1,tasks=2,wait=1,unassigned=1,history=1))
+
+    def migration_backup(self, payload, name="snapshot"):
+        import backup
+        path = Path(self.directory.name).parent / (Path(self.directory.name).name + "-" + name)
+        self.addCleanup(lambda: __import__('shutil').rmtree(path) if path.exists() else None)
+        backup.create(self.directory.name,path)
+        payload['backup_path']=str(path)
+        return path
+
+    def test_migration_dry_run_is_readonly_and_reports_missing_mappings(self):
+        import backup, migration
+        payload = self.migration_payload()
+        with db.conn() as c: before=backup.fingerprint(c)
+        report=migration.dry_run(payload)
+        self.assertEqual(report['status'],'valid')
+        self.assertEqual(report['counts'],payload['expected_counts'])
+        with db.conn() as c: self.assertEqual(backup.fingerprint(c),before)
+        payload['assignee_map']={}
+        payload['jobs'][0]['tasks'][0]['source']['references']=[dict(number='#9999')]
+        payload['jobs'][0]['tasks'][0].pop('description')
+        report=migration.dry_run(payload)
+        self.assertEqual(report['status'],'invalid')
+        self.assertTrue(any('assignee' in e for e in report['errors']))
+        self.assertTrue(any('reference' in e for e in report['errors']))
+        self.assertTrue(any('missing fields' in e for e in report['errors']))
+
+    def test_migration_atomic_import_retry_unknown_result_and_conflict(self):
+        import copy, migration
+        payload=self.migration_payload(); self.migration_backup(payload)
+        baseline=[db.get_job(j['id']) for j in db.list_jobs()]
+        with patch.object(config_module := migration.config,'MIGRATION_ENABLED',True):
+            response=client.post('/api/migrations',json=payload,headers=self.headers)
+            self.assertEqual(response.status_code,201,response.text)
+            result=response.json()
+            self.assertTrue(result['verified'])
+            self.assertEqual(migration.apply(payload),result)
+            self.assertEqual(migration.get_batch(payload['batch_id'])['result'],result)
+            changed=copy.deepcopy(payload); changed['jobs'][0]['title']='overwrite'
+            with self.assertRaises(ValueError): migration.apply(changed)
+            changed['batch_id']='different-batch'
+            with self.assertRaises(ValueError): migration.apply(changed)
+        for original in baseline: self.assertEqual(db.get_job(original['id']),original)
+        job=db.get_job(next(i['new_id'] for i in result['ids'] if i['kind']=='job'))
+        self.assertEqual(job['status'],'ready')
+        self.assertEqual(job['tasks'][0]['status'],'wait')
+        self.assertEqual(job['tasks'][0]['assignee'],None)
+        self.assertEqual(job['tasks'][1]['assignee'],'Owner')
+        self.assertEqual(job['group_tags'],['TagA','TagB'])
+        self.assertEqual(job['description'],'# original\r\n')
+        self.assertEqual(job['source_history'],payload['jobs'][0]['source_history'])
+        self.assertEqual([t['title'] for t in job['tasks']],['blocked','next'])
+        with db.conn() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM migration_items').fetchone()[0],3)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM source_master_mappings').fetchone()[0],3)
+
+    def test_migration_failure_rolls_back_and_safe_retry(self):
+        import backup, migration
+        payload=self.migration_payload(); self.migration_backup(payload)
+        with db.conn() as c: before=backup.fingerprint(c)
+        original=migration._insert; calls=[]
+        def interrupted(*args):
+            calls.append(1)
+            if len(calls)==2: raise RuntimeError('simulated interruption')
+            return original(*args)
+        with patch.object(migration.config,'MIGRATION_ENABLED',True):
+            with patch.object(migration,'_insert',side_effect=interrupted), self.assertRaises(RuntimeError): migration.apply(payload)
+            with db.conn() as c: self.assertEqual(backup.fingerprint(c),before)
+            with self.assertRaises(KeyError): migration.get_batch(payload['batch_id'])
+            self.assertTrue(migration.apply(payload)['verified'])
+
+    def test_migration_concurrent_retries_share_one_committed_result(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import migration
+        payload=self.migration_payload(); self.migration_backup(payload)
+        with patch.object(migration.config,'MIGRATION_ENABLED',True), ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(lambda _: migration.apply(payload), range(2)))
+        self.assertEqual(results[0],results[1])
+        with db.conn() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM migration_batches').fetchone()[0],1)
+
+    def test_backup_restore_and_migration_preconditions(self):
+        import backup, migration
+        payload=self.migration_payload(); snapshot=self.migration_backup(payload)
+        restored=Path(str(snapshot)+'-restored')
+        self.addCleanup(lambda: __import__('shutil').rmtree(restored) if restored.exists() else None)
+        backup.restore(snapshot,restored)
+        self.assertEqual(backup.verify(snapshot)['fingerprint'],backup.verify(restored)['fingerprint'])
+        with self.assertRaises(ValueError): migration.apply(payload)
+        db.update_job(1,note='changed after snapshot')
+        with patch.object(migration.config,'MIGRATION_ENABLED',True), self.assertRaisesRegex(ValueError,'fresh snapshot'): migration.apply(payload)
+        (snapshot/'jobs.db').write_bytes(b'corrupt')
+        with self.assertRaises(ValueError): backup.verify(snapshot)
+
+    def test_identical_source_in_new_batch_skips_without_overwriting_local_edits(self):
+        import migration
+        payload=self.migration_payload(); self.migration_backup(payload)
+        with patch.object(migration.config,'MIGRATION_ENABLED',True):
+            result=migration.apply(payload)
+            job_id=result['ids'][0]['new_id']
+            db.update_job(job_id,note='local edit must survive')
+            payload['batch_id']='second-batch'
+            self.migration_backup(payload,'second-snapshot')
+            result=migration.apply(payload)
+        self.assertEqual(result['create'],0)
+        self.assertEqual(result['skip'],3)
+        self.assertEqual(db.get_job(job_id)['note'],'local edit must survive')
+
+    def test_migration_count_mismatch_and_postwrite_mismatch_abort(self):
+        import migration
+        payload=self.migration_payload()
+        payload['expected_counts']['tasks']=999
+        self.assertEqual(migration.dry_run(payload)['status'],'invalid')
+        payload['expected_counts']['tasks']=2; self.migration_backup(payload)
+        original=migration._insert
+        def corrupt(c,current,parents):
+            entity_id=original(c,current,parents)
+            if current['kind']=='task': c.execute("UPDATE tasks SET description='corrupt' WHERE id=?",(entity_id,))
+            return entity_id
+        before=len(db.list_jobs())
+        with patch.object(migration.config,'MIGRATION_ENABLED',True), patch.object(migration,'_insert',side_effect=corrupt):
+            with self.assertRaisesRegex(ValueError,'field mismatch'): migration.apply(payload)
+        self.assertEqual(len(db.list_jobs()),before)
+        with self.assertRaises(KeyError): migration.get_batch(payload['batch_id'])
+
 
 class DownloadTransportTests(unittest.TestCase):
     @classmethod

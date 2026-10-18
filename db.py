@@ -71,6 +71,17 @@ def init():
             system TEXT NOT NULL, event_key TEXT NOT NULL, owner_uuid TEXT NOT NULL,
             position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(system,event_key),
             FOREIGN KEY(system,owner_uuid) REFERENCES source_records(system,uuid) ON DELETE CASCADE)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS migration_batches(
+            batch_id TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, status TEXT NOT NULL,
+            payload TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS migration_items(
+            system TEXT NOT NULL, uuid TEXT NOT NULL, batch_id TEXT NOT NULL REFERENCES migration_batches(batch_id),
+            payload_hash TEXT NOT NULL, original TEXT NOT NULL, target TEXT NOT NULL,
+            PRIMARY KEY(system,uuid), FOREIGN KEY(system,uuid) REFERENCES source_records(system,uuid) ON DELETE CASCADE)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS source_master_mappings(
+            system TEXT NOT NULL, kind TEXT NOT NULL, source_id TEXT NOT NULL,
+            source_name TEXT NOT NULL, target_name TEXT NOT NULL,
+            PRIMARY KEY(system,kind,source_id))""")
 
 def default_assignee():
     with conn() as c:
@@ -113,10 +124,12 @@ def _validate_source(source):
         if source.get(key) is not None: _timestamp(source[key])
     if "version" in source and source["version"] is not None and (type(source["version"]) is not int or source["version"] < 0):
         raise ValueError("source version must be a nonnegative integer or null")
+    if "references" in source and not isinstance(source["references"],list): raise ValueError("source references must be an array")
     for reference in source.get("references", []):
         if not isinstance(reference, dict) or not (reference.get("uuid") or reference.get("number")):
             raise ValueError("explicit source references require uuid or number")
         if set(reference) - {"system", "uuid", "number", "label"}: raise ValueError("unknown source reference field")
+        if any(not isinstance(v,str) or not v.strip() for v in reference.values()): raise ValueError("source reference fields must be nonempty strings")
 
 def _urls(urls):
     if not isinstance(urls, list): raise ValueError("session_urls must be an array")
