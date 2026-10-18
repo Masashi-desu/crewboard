@@ -39,3 +39,15 @@ RESTは `?group_tags=TagA&group_tags=TagB`、WebMCPは配列、UIは複数選択
 同番号が複数ある場合は全候補を返し、勝手に1件へ決定しない。
 UIではシステム名:旧番号とUUIDを併記。検索もこの名前空間付き表示に対応。
 通常のIssue番号から依存関係や参照先を自動生成しない。
+
+## 元日時・履歴（task06）
+
+sourceにcreated_at/updated_at/completed_at/versionを保持（省略/null可）。
+日時はtimezone付きISO 8601文字列を原文のまま保存し、UTCへ書き換えない。
+source.versionは元version。jobs/tasks.version（初期1、更新時加算）は移管先のversion。
+`source_history`は作成時の順序付きイベント配列で、原ID、occurred_at、job_uuid/task_uuid、
+operation、details、recorder、sourceおよび追加情報をJSON原値で保存。ID・日時は必須。
+sourceがui/mcpでも記録者を推測しない。配列順を保存し、同一システムの履歴ID重複は拒否。
+取得できなかった履歴の完全性は主張しない。元履歴は変更不可。
+source_historyテーブルは移管元専用。既存historyにはcategory（既定operation）とbatch_idを加算。
+移管操作はcategory=migrationと独立バッチIDで記録し、UIでも元履歴と別表示。

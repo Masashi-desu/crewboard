@@ -75,7 +75,8 @@ let editing=false;
 const WAIT_FIELDS={wait_reason:'待ち理由',wait_for:'待ち先',wait_note:'待ち補足',resume_condition:'再開条件'};
 const waitFields=(t,edit=false)=>Object.entries(WAIT_FIELDS).map(([k,label])=>`${edit?`<div class="v">${label}: ${esc(t[k])}</div>`:''}<label class="${edit?'e':''}" ${edit?'hidden':''}>${label}<textarea name="${k}" rows="2">${esc(t[k]||'')}</textarea></label>`).join('');
 const waitValues=f=>Object.fromEntries(Object.keys(WAIT_FIELDS).map(k=>[k,f.elements[k].value]));
-const sourceView=s=>s?`<div class="source-ref">移管元 ${esc(s.system)}:${esc(s.number)} / UUID ${esc(s.uuid)}</div>`:'';
+const sourceView=s=>s?`<div class="source-ref">移管元 ${esc(s.system)}:${esc(s.number)} / UUID ${esc(s.uuid)}<pre>${esc(JSON.stringify(s,null,2))}</pre></div>`:'';
+const sourceHistoryView=events=>events?.length?`<details><summary>移管元履歴 ${events.length}件（記録者不明は推測しません）</summary>${events.map(h=>`<pre>${esc(JSON.stringify(h,null,2))}</pre>`).join('')}</details>`:'';
 async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('#main').innerHTML='<div class="empty">ジョブが見つかりません</div>';return;}
  const tc=j.task_counts, byA={};j.tasks.forEach(t=>{byA[t.assignee]=byA[t.assignee]||{done:0,total:0};byA[t.assignee].total++;if(t.status==='done')byA[t.assignee].done++;});
  const asg=[['','未割当'],...S.assignees.map(a=>[a.name,a.name])], link=location.origin+location.pathname+'#/job/'+j.id;
@@ -100,7 +101,7 @@ async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('
    <span></span><label style="grid-column:span 2">グループタグ（複数選択）<select name="group_tags" multiple data-job-field aria-label="グループタグ">${S.tags.map(g=>`<option ${(j.group_tags||[]).includes(g.name)?'selected':''}>${esc(g.name)}</option>`).join('')}</select><a href="#/master" class="mlink" data-mseg="tags">＋ マスタで管理</a></label></div>
   <section class="dz" aria-label="危険ゾーン"><h3><button class="dz-h" id="dz-toggle" aria-expanded="false" aria-controls="dz-body">危険ゾーン<svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></h3>
    <div class="dz-wrap" id="dz-body" hidden inert><div class="dz-in"><div class="dz-row"><span>ジョブとタスク・履歴を完全に削除します。</span><button class="danger-outline" id="del-job" data-action="delete-job">このジョブを削除</button></div></div></div></section>
-  <details class="hist"><summary>変更履歴 ${j.history.length}</summary><ul>${j.history.map(h=>`<li>${esc(h.at.replace('T',' ').slice(0,16))} — ${esc(h.text)}</li>`).join('')}</ul></details></section>
+  ${sourceHistoryView(j.source_history)}<details class="hist"><summary>移管先操作履歴 ${j.history.length}</summary><ul>${j.history.map(h=>`<li>${esc(h.at.replace('T',' ').slice(0,16))} [${esc(h.category||'operation')}] ${esc(h.batch_id)} — ${esc(h.text)}</li>`).join('')}</ul></details></section>
  <section aria-label="タスク一覧"><div class="tasks-h"><h2>タスク <span class="n">${tc.done} / ${tc.total}</span></h2><button class="addlink" id="add-task" data-action="add-task">＋ 追加</button></div>
   <form class="addform" id="add-form" hidden aria-label="タスクを追加"><input name="title" placeholder="タイトル" aria-label="タスクタイトル" required autocomplete="off"><textarea name="body" rows="2" placeholder="本文（任意）" aria-label="タスク本文" style="flex-basis:100%"></textarea>
    ${sel('assignee',asg,'','担当')}${sel('status',Object.entries(TS),'todo','状態')}${waitFields({})}<button class="primary">追加</button></form>
@@ -111,7 +112,7 @@ async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('
    <form class="tbody" data-task-form="${t.id}" aria-label="タスク ${i+1}"><div class="tline"><b class="ttitle v">${esc(t.title)||'<span style="color:var(--mut)">（タイトルなし）</span>'}</b><input class="e inplace ttitle" name="title" value="${esc(t.title)}" aria-label="タスクタイトル" placeholder="タイトル" hidden>
     <span class="tact"><button type="button" class="addlink v" data-edit-task>編集</button><button type="button" class="addlink e" data-cancel hidden>キャンセル</button><button class="addlink e strong" hidden>保存</button></span></div>
     ${t.body?`<details class="tbd v"><summary>${esc(t.body)}</summary><div class="full">${esc(t.body)}</div></details>`:''}<textarea class="e inplace tbd-in" name="body" rows="2" aria-label="タスク本文" placeholder="本文" hidden>${esc(t.body)}</textarea>
-    ${sourceView(t.source)}${t.status==='wait'?'<strong class="blocked">待機中・着手不可</strong>':''}${waitFields(t,true)}</form></li>`).join('')}</ul></section></div></article>`;
+    ${sourceView(t.source)}${sourceHistoryView(t.source_history)}${t.status==='wait'?'<strong class="blocked">待機中・着手不可</strong>':''}${waitFields(t,true)}</form></li>`).join('')}</ul></section></div></article>`;
  const m=$('#main');
  m.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>copy(b.dataset.c));
  m.querySelectorAll('[data-job-field]').forEach(el=>el.onchange=async()=>{await api('/jobs/'+j.id,{method:'PATCH',body:{[el.name]:el.multiple?Array.from(el.selectedOptions,x=>x.value):el.value}});toast('保存しました');await load();});

@@ -183,12 +183,14 @@ class JobIn(BaseModel):
     note: Optional[str]=None; sort: Optional[float]=None
     group_tags: Optional[List[str]]=None
     source: Optional[dict]=None
+    source_history: Optional[List[dict]]=None
 class TaskIn(BaseModel):
     title: Optional[str]=None; body: Optional[str]=None; status: Optional[str]=None; assignee: Optional[str]=None
     priority: Optional[str]=None; importance: Optional[str]=None; sort: Optional[float]=None
     wait_reason: Optional[str]=None; wait_for: Optional[str]=None
     wait_note: Optional[str]=None; resume_condition: Optional[str]=None
     source: Optional[dict]=None
+    source_history: Optional[List[dict]]=None
 class AssigneeIn(BaseModel):
     name: str; kind: str="bot"
 

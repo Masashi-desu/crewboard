@@ -1,4 +1,4 @@
-import sqlite3, json, os, datetime
+import sqlite3, json, os, datetime, uuid
 import config
 DB = config.DB_PATH
 JOB_STATUSES = ["wait", "ready", "run", "done"]
@@ -57,6 +57,16 @@ def init():
             payload TEXT NOT NULL, PRIMARY KEY(system,uuid),
             CHECK((job_id IS NULL) != (task_id IS NULL)))""")
         c.execute("CREATE INDEX IF NOT EXISTS source_number_idx ON source_records(system,number)")
+        for table in ("jobs", "tasks"):
+            if "version" not in [r[1] for r in c.execute(f"PRAGMA table_info({table})")]:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+        for field in ("category", "batch_id"):
+            if field not in [r[1] for r in c.execute("PRAGMA table_info(history)")]:
+                c.execute(f"ALTER TABLE history ADD COLUMN {field} TEXT NOT NULL DEFAULT '{'operation' if field == 'category' else ''}'")
+        c.execute("""CREATE TABLE IF NOT EXISTS source_history(
+            system TEXT NOT NULL, event_key TEXT NOT NULL, owner_uuid TEXT NOT NULL,
+            position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(system,event_key),
+            FOREIGN KEY(system,owner_uuid) REFERENCES source_records(system,uuid) ON DELETE CASCADE)""")
 
 def default_assignee():
     with conn() as c:
@@ -90,10 +100,42 @@ def _source(c, kind, entity_id):
 
 def _validate_source(source):
     if source is None: return
-    if not isinstance(source, dict) or set(source) != {"system", "uuid", "number"}:
-        raise ValueError("source requires system, uuid, number (no unknown fields)")
+    allowed = {"system", "uuid", "number", "created_at", "updated_at", "completed_at", "version"}
+    if not isinstance(source, dict) or not {"system", "uuid", "number"} <= set(source) or set(source) - allowed:
+        raise ValueError("source requires system, uuid, number and supported metadata")
     if any(not isinstance(source[k], str) or not source[k].strip() for k in ("system", "uuid", "number")):
         raise ValueError("source identity fields must be nonempty strings")
+    for key in ("created_at", "updated_at", "completed_at"):
+        if source.get(key) is not None: _timestamp(source[key])
+    if "version" in source and source["version"] is not None and (type(source["version"]) is not int or source["version"] < 0):
+        raise ValueError("source version must be a nonnegative integer or null")
+
+def _timestamp(value):
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+        if parsed.utcoffset() is None: raise ValueError("timezone required")
+    except (TypeError, ValueError) as error:
+        raise ValueError("source timestamps must be ISO 8601 strings with timezone") from error
+
+def _source_history(c, source):
+    if source is None: return []
+    return [json.loads(r[0]) for r in c.execute("SELECT payload FROM source_history WHERE system=? AND owner_uuid=? ORDER BY position", (source["system"],source["uuid"]))]
+
+def _insert_source_history(c, source, events):
+    if not events: return
+    if source is None: raise ValueError("source_history requires source identity")
+    for i, event in enumerate(events):
+        if not isinstance(event, dict) or "id" not in event or type(event["id"]) not in (str,int):
+            raise ValueError("source history requires an original id")
+        _timestamp(event.get("occurred_at"))
+        try:
+            c.execute("INSERT INTO source_history(system,event_key,owner_uuid,position,payload) VALUES(?,?,?,?,?)",
+                      (source["system"],json.dumps(event["id"]),source["uuid"],i,json.dumps(event,ensure_ascii=False)))
+        except sqlite3.IntegrityError as error: raise ValueError("duplicate source history ID") from error
+
+def migration_audit(c, job_id, batch_id, text):
+    c.execute("INSERT INTO history(job_id,at,text,category,batch_id) VALUES(?,?,?,'migration',?)",
+              (job_id,now(),text,batch_id))
 
 def _insert_source(c, kind, entity_id, source):
     if source is None: return
@@ -109,6 +151,7 @@ def _immutable_source(c, kind, entity_id, source):
 
 def _task(c, row):
     result = dict(row); result["source"] = _source(c, "task", result["id"])
+    result["source_history"] = _source_history(c, result["source"])
     return result
 
 def source_refs(system, uuid=None, number=None):
@@ -129,6 +172,7 @@ def _job(c, r, with_tasks=True):
     d = dict(r); d["tags"] = json.loads(d["tags"] or "[]"); d["assignees"] = json.loads(d.get("assignees") or "[]"); d["sample"] = bool(d["sample"])
     d["group_tags"] = [x[0] for x in c.execute("SELECT name FROM job_group_tags WHERE job_id=? ORDER BY position,name", (d["id"],))]
     d["source"] = _source(c, "job", d["id"])
+    d["source_history"] = _source_history(c, d["source"])
     ts = [_task(c,x) for x in c.execute("SELECT * FROM tasks WHERE job_id=? ORDER BY sort,id",(d["id"],))]
     d["task_counts"] = {s: sum(1 for x in ts if x["status"]==s) for s in TASK_STATUSES}; d["task_counts"]["total"]=len(ts)
     d["current_assignee"] = next((x["assignee"] for x in ts if x["status"] != "done"), None) or None
@@ -155,7 +199,7 @@ def get_job(job_id):
     with conn() as c:
         r = c.execute("SELECT * FROM jobs WHERE id=?",(job_id,)).fetchone()
         if not r: raise KeyError(f"job {job_id} not found")
-        d = _job(c, r); d["history"] = [dict(x) for x in c.execute("SELECT at,text FROM history WHERE job_id=? ORDER BY id DESC",(job_id,))]
+        d = _job(c, r); d["history"] = [dict(x) for x in c.execute("SELECT id,at,text,category,batch_id FROM history WHERE job_id=? ORDER BY id DESC",(job_id,))]
         return d
 
 JOB_FIELDS = ["assignees","title","status","priority","importance","tags","group_tag","group_tags","conditions","policy","note","sort"]
@@ -177,7 +221,7 @@ def _check(f, v):
     if f=="priority" and v not in PRIORITIES: raise ValueError(f"priority must be one of {PRIORITIES}")
     if f=="importance" and v not in LEVELS: raise ValueError(f"importance must be one of {LEVELS}")
 
-def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None, group_tags=None, source=None):
+def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None, group_tags=None, source=None, source_history=None):
     for f,v in (("status",status),("priority",priority),("importance",importance)): _check(f,v)
     groups = _groups(group_tag, group_tags); group_tag = groups[0] if groups else ""
     assignees = assignees or []
@@ -192,9 +236,12 @@ def create_job(title, status="wait", priority="normal", importance="normal", tag
         jid = cur.lastrowid
         _set_groups(c, jid, groups)
         _insert_source(c, "job", jid, source)
+        _insert_source_history(c, source, source_history)
+        if source: migration_audit(c, jid, "manual:"+str(uuid.uuid4()), "移管元ジョブ情報を保存")
     return get_job(jid)
 
 def update_job(job_id, **kw):
+    if "source_history" in kw: raise ValueError("source_history is immutable; supply at creation")
     if "source" in kw:
         with conn() as c: _immutable_source(c, "job", job_id, kw.pop("source"))
     kw = {k:v for k,v in kw.items() if k in JOB_FIELDS and v is not None}
@@ -216,7 +263,7 @@ def update_job(job_id, **kw):
         t = now()
         with conn() as c:
             if groups is not None: _set_groups(c, job_id, groups)
-            c.execute(f"UPDATE jobs SET {','.join(k+'=?' for k in kw)},updated_at=? WHERE id=?", [*kw.values(), t, job_id])
+            c.execute(f"UPDATE jobs SET {','.join(k+'=?' for k in kw)},updated_at=?,version=version+1 WHERE id=?", [*kw.values(), t, job_id])
             c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(job_id,t,"更新: "+", ".join(kw)))
     return get_job(job_id)
 
@@ -236,7 +283,7 @@ def _check_task(kw):
         if f in kw and kw[f] not in LEVELS: raise ValueError(f"{f} must be one of {LEVELS}")
 
 def add_task(job_id, title="", body="", status="todo", assignee=None, priority="normal", importance="normal",
-             wait_reason="", wait_for="", wait_note="", resume_condition="", source=None):
+             wait_reason="", wait_for="", wait_note="", resume_condition="", source=None, source_history=None):
     if not (title or "").strip(): raise ValueError("task title is required")
     _check_task(dict(status=status, assignee=assignee, priority=priority, importance=importance)); get_job(job_id); t = now()
     with conn() as c:
@@ -246,6 +293,8 @@ def add_task(job_id, title="", body="", status="todo", assignee=None, priority="
         c.execute("UPDATE tasks SET wait_reason=?,wait_for=?,wait_note=?,resume_condition=? WHERE id=?",
                   (wait_reason,wait_for,wait_note,resume_condition,cur.lastrowid))
         _insert_source(c, "task", cur.lastrowid, source)
+        _insert_source_history(c, source, source_history)
+        if source: migration_audit(c, job_id, "manual:"+str(uuid.uuid4()), f"移管元タスク #{cur.lastrowid} 情報を保存")
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(job_id,t,f"タスク #{cur.lastrowid} 追加"))
         if status == "done": _auto_done(c, job_id, t)
         else: _auto_reopen(c, job_id, t)
@@ -257,7 +306,7 @@ def _auto_done(c, job_id, t):
     if not j or j["status"] == "done": return
     n, open_ = c.execute("SELECT COUNT(*), SUM(status!='done') FROM tasks WHERE job_id=?",(job_id,)).fetchone()
     if n and not open_:
-        c.execute("UPDATE jobs SET status='done',updated_at=? WHERE id=?",(t,job_id))
+        c.execute("UPDATE jobs SET status='done',updated_at=?,version=version+1 WHERE id=?",(t,job_id))
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(job_id,t,"全タスク完了のため自動で完了(done)"))
 
 def _auto_reopen(c, job_id, t):
@@ -265,12 +314,13 @@ def _auto_reopen(c, job_id, t):
     j = c.execute("SELECT status FROM jobs WHERE id=?",(job_id,)).fetchone()
     if not j or j["status"] != "done": return
     if c.execute("SELECT COUNT(*) FROM tasks WHERE job_id=? AND status!='done'",(job_id,)).fetchone()[0]:
-        c.execute("UPDATE jobs SET status='run',updated_at=? WHERE id=?",(t,job_id))
+        c.execute("UPDATE jobs SET status='run',updated_at=?,version=version+1 WHERE id=?",(t,job_id))
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(job_id,t,"未完了タスクがあるため自動で進行中(run)に戻した"))
 
 TASK_FIELDS = ["title","body","status","assignee","priority","importance","sort",
                "wait_reason","wait_for","wait_note","resume_condition"]
 def update_task(task_id, **kw):
+    if "source_history" in kw: raise ValueError("source_history is immutable; supply at creation")
     if "source" in kw:
         with conn() as c: _immutable_source(c, "task", task_id, kw.pop("source"))
     kw = {k:v for k,v in kw.items() if k in TASK_FIELDS and (v is not None or k == "assignee")}; _check_task(kw); t = now()
@@ -279,7 +329,7 @@ def update_task(task_id, **kw):
         r = c.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
         if not r: raise KeyError(f"task {task_id} not found")
         if kw:
-            c.execute(f"UPDATE tasks SET {','.join(k+'=?' for k in kw)},updated_at=? WHERE id=?", [*kw.values(), t, task_id])
+            c.execute(f"UPDATE tasks SET {','.join(k+'=?' for k in kw)},updated_at=?,version=version+1 WHERE id=?", [*kw.values(), t, task_id])
             c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(r["job_id"],t,f"タスク #{task_id} 更新: "+", ".join(kw)))
             if kw.get("status") == "done" and r["status"] != "done": _auto_done(c, r["job_id"], t)
             elif kw.get("status") in ("todo","doing","wait") and r["status"] == "done": _auto_reopen(c, r["job_id"], t)

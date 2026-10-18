@@ -307,6 +307,35 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(db.get_job(job["id"])["title"], "native")
         with self.assertRaises(ValueError): db.update_task(task["id"], source=None)
 
+    def test_source_dates_version_and_history_are_preserved_separately(self):
+        source = dict(system="old", uuid="dated", number="#0002", created_at="2020-01-02T03:04:05.123+09:00",
+                      updated_at="2021-02-03T04:05:06Z", completed_at=None, version=17)
+        events = [dict(id=2, occurred_at="2021-02-03T04:05:06+00:00", operation="edit", details={"text":"原文"},
+                       job_uuid="dated", task_uuid=None, recorder=None, source="mcp"),
+                  dict(id=1, occurred_at="2020-01-02T03:04:05+09:00", operation="create", recorder="旧担当A", source="ui")]
+        job = db.create_job("dated", source=source, source_history=events)
+        saved = db.update_job(job["id"], note="local edit")
+        self.assertEqual(saved["source"], source)
+        self.assertEqual(saved["source_history"], events)
+        self.assertEqual(saved["version"], job["version"] + 1)
+        self.assertNotEqual(saved["created_at"], source["created_at"])
+        audits = [h for h in saved["history"] if h["category"] == "migration"]
+        self.assertEqual(len(audits), 1)
+        self.assertTrue(audits[0]["batch_id"].startswith("manual:"))
+        self.assertIsNone(saved["source_history"][0]["recorder"])
+
+    def test_source_history_atomic_validation_and_immutability(self):
+        count = len(db.list_jobs())
+        source = dict(system="old", uuid="invalid", number="#0003", created_at="2020-01-01T00:00:00")
+        with self.assertRaises(ValueError): db.create_job("bad timezone", source=source)
+        self.assertEqual(len(db.list_jobs()), count)
+        del source["created_at"]
+        events = [dict(id="same", occurred_at="2020-01-01T00:00:00+09:00")]*2
+        with self.assertRaises(ValueError): db.create_job("duplicate events", source=source, source_history=events)
+        self.assertEqual(len(db.list_jobs()), count)
+        job = db.create_job("immutable", source=source)
+        with self.assertRaises(ValueError): db.update_job(job["id"], source_history=[])
+
 
 class DownloadTransportTests(unittest.TestCase):
     @classmethod
