@@ -45,6 +45,11 @@ def init():
         if not c.execute("SELECT 1 FROM assignees").fetchone():
             c.executemany("INSERT INTO assignees(name,kind,sort) VALUES(?,?,?)", [("Owner","human",0),("Agent Bot","bot",1)])
         if not c.execute("SELECT 1 FROM jobs").fetchone(): seed(c)
+        c.execute("""CREATE TABLE IF NOT EXISTS job_group_tags(
+            job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            name TEXT NOT NULL REFERENCES group_tags(name) ON UPDATE CASCADE ON DELETE CASCADE,
+            position INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(job_id,name))""")
+        c.execute("INSERT OR IGNORE INTO job_group_tags(job_id,name) SELECT id,group_tag FROM jobs WHERE group_tag!=''")
 
 def default_assignee():
     with conn() as c:
@@ -74,6 +79,7 @@ def seed(c):
 
 def _job(c, r, with_tasks=True):
     d = dict(r); d["tags"] = json.loads(d["tags"] or "[]"); d["assignees"] = json.loads(d.get("assignees") or "[]"); d["sample"] = bool(d["sample"])
+    d["group_tags"] = [x[0] for x in c.execute("SELECT name FROM job_group_tags WHERE job_id=? ORDER BY position,name", (d["id"],))]
     ts = [dict(x) for x in c.execute("SELECT * FROM tasks WHERE job_id=? ORDER BY sort,id",(d["id"],))]
     d["task_counts"] = {s: sum(1 for x in ts if x["status"]==s) for s in TASK_STATUSES}; d["task_counts"]["total"]=len(ts)
     d["current_assignee"] = next((x["assignee"] for x in ts if x["status"] != "done"), None) or None
@@ -84,12 +90,13 @@ def _job(c, r, with_tasks=True):
     if with_tasks: d["tasks"] = ts
     return d
 
-def list_jobs(status=None, q=None, priority=None, group_tag=None, include_tasks=True):
+def list_jobs(status=None, q=None, priority=None, group_tag=None, include_tasks=True, group_tags=None):
     with conn() as c:
         sql, a = "SELECT * FROM jobs WHERE 1=1", []
         if status: sql += " AND status=?"; a.append(status)
         if priority: sql += " AND priority=?"; a.append(priority)
-        if group_tag: sql += " AND group_tag=?"; a.append(group_tag)
+        for name in dict.fromkeys(([group_tag] if group_tag else []) + (group_tags or [])):
+            sql += " AND EXISTS(SELECT 1 FROM job_group_tags g WHERE g.job_id=jobs.id AND g.name=?)"; a.append(name)
         if q: sql += " AND (title LIKE ? OR conditions LIKE ? OR policy LIKE ? OR note LIKE ?)"; a += [f"%{q}%"]*4
         return [_job(c, r, include_tasks) for r in c.execute(sql+" ORDER BY sort,id", a)]
 
@@ -100,15 +107,28 @@ def get_job(job_id):
         d = _job(c, r); d["history"] = [dict(x) for x in c.execute("SELECT at,text FROM history WHERE job_id=? ORDER BY id DESC",(job_id,))]
         return d
 
-JOB_FIELDS = ["assignees","title","status","priority","importance","tags","group_tag","conditions","policy","note","sort"]
+JOB_FIELDS = ["assignees","title","status","priority","importance","tags","group_tag","group_tags","conditions","policy","note","sort"]
+
+def _groups(group_tag, group_tags):
+    names = list(dict.fromkeys(n.strip() for n in (group_tags if group_tags is not None else ([group_tag] if group_tag else []))))
+    if any(not n for n in names): raise ValueError("empty group tag")
+    if group_tags is not None and group_tag and (not names or group_tag != names[0]):
+        raise ValueError("group_tag must match the first group_tags entry")
+    known = {g["name"] for g in list_group_tags()}
+    if any(n not in known for n in names): raise ValueError("unknown group_tags; register master tags explicitly")
+    return names
+
+def _set_groups(c, job_id, names):
+    c.execute("DELETE FROM job_group_tags WHERE job_id=?", (job_id,))
+    c.executemany("INSERT INTO job_group_tags(job_id,name,position) VALUES(?,?,?)", [(job_id,n,i) for i,n in enumerate(names)])
 def _check(f, v):
     if f=="status" and v not in JOB_STATUSES: raise ValueError(f"status must be one of {JOB_STATUSES}")
     if f=="priority" and v not in PRIORITIES: raise ValueError(f"priority must be one of {PRIORITIES}")
     if f=="importance" and v not in LEVELS: raise ValueError(f"importance must be one of {LEVELS}")
 
-def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None):
+def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None, group_tags=None):
     for f,v in (("status",status),("priority",priority),("importance",importance)): _check(f,v)
-    if group_tag and group_tag not in [g["name"] for g in list_group_tags()]: raise ValueError("unknown group_tag; register it with add_group_tag")
+    groups = _groups(group_tag, group_tags); group_tag = groups[0] if groups else ""
     assignees = assignees or []
     known = {a["name"] for a in list_assignees()}
     if any(name not in known for name in assignees): raise ValueError("unknown assignee; see list_assignees")
@@ -119,10 +139,15 @@ def create_job(title, status="wait", priority="normal", importance="normal", tag
                         (title,status,priority,importance,json.dumps(tags or [],ensure_ascii=False),group_tag,conditions,policy,note,json.dumps(assignees,ensure_ascii=False),mx,t,t))
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(cur.lastrowid,t,"作成"))
         jid = cur.lastrowid
+        _set_groups(c, jid, groups)
     return get_job(jid)
 
 def update_job(job_id, **kw):
     kw = {k:v for k,v in kw.items() if k in JOB_FIELDS and v is not None}
+    groups = None
+    if "group_tag" in kw or "group_tags" in kw:
+        groups = _groups(kw.get("group_tag"), kw.pop("group_tags", None))
+        kw["group_tag"] = groups[0] if groups else ""
     for k,v in kw.items(): _check(k,v)
     if "tags" in kw: kw["tags"] = json.dumps(kw["tags"], ensure_ascii=False)
     if "assignees" in kw:
@@ -136,6 +161,7 @@ def update_job(job_id, **kw):
     if kw:
         t = now()
         with conn() as c:
+            if groups is not None: _set_groups(c, job_id, groups)
             c.execute(f"UPDATE jobs SET {','.join(k+'=?' for k in kw)},updated_at=? WHERE id=?", [*kw.values(), t, job_id])
             c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(job_id,t,"更新: "+", ".join(kw)))
     return get_job(job_id)
@@ -268,7 +294,7 @@ remove_assignee = delete_assignee
 
 def list_group_tags():
     with conn() as c:
-        return [dict(r) for r in c.execute("SELECT g.name,g.color,(SELECT COUNT(*) FROM jobs WHERE group_tag=g.name) AS job_count FROM group_tags g ORDER BY g.sort,g.name")]
+        return [dict(r) for r in c.execute("SELECT g.name,g.color,(SELECT COUNT(*) FROM job_group_tags WHERE name=g.name) AS job_count FROM group_tags g ORDER BY g.sort,g.name")]
 def add_group_tag(name, color=""):
     if not name.strip(): raise ValueError("name required")
     with conn() as c: c.execute("INSERT OR IGNORE INTO group_tags VALUES(?,?,(SELECT COALESCE(MAX(sort),0)+1 FROM group_tags))", (name.strip(), color))
@@ -285,8 +311,8 @@ def update_group_tag(name, new_name=None, color=None):
 def delete_group_tag(name):
     """Deletes the tag; jobs using it become 'グループタグなし' (group_tag='')."""
     with conn() as c:
-        c.execute("UPDATE jobs SET group_tag='' WHERE group_tag=?", (name,))
         c.execute("DELETE FROM group_tags WHERE name=?", (name,))
+        c.execute("UPDATE jobs SET group_tag=COALESCE((SELECT name FROM job_group_tags WHERE job_id=jobs.id ORDER BY position,name LIMIT 1),'') WHERE group_tag=?", (name,))
     return list_group_tags()
 
 

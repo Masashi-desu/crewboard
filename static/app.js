@@ -1,6 +1,6 @@
 'use strict';
 const LV={low:'低',normal:'通常',high:'高',urgent:'最優先'}, TS={todo:'未着手',doing:'進行中',wait:'待機（ブロック中）',done:'完了'}, COLS=['wait','ready','run'];
-const S={jobs:[],assignees:[],tags:[],mseg:'assignees',view:'kanban'/* matrix toggle removed; saved prefs ignored */,q:'',prio:'',group:'',who:''};
+const S={jobs:[],assignees:[],tags:[],mseg:'assignees',view:'kanban'/* matrix toggle removed; saved prefs ignored */,q:'',prio:'',group:[],who:''};
 const $=(s,r=document)=>r.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const av=(n,cls='av')=>{const a=S.assignees.find(x=>x.name===n);return a&&a.icon?`<img class="${cls}" src="${esc(String(a.icon).replace(/^\//,''))}" alt="" aria-hidden="true" loading="lazy">`:'';};
 const setEd=(el,on)=>{el.classList.toggle('editing',on);el.querySelectorAll('.v').forEach(x=>x.hidden=on);el.querySelectorAll('.e').forEach(x=>x.hidden=!on);};
@@ -36,12 +36,12 @@ function card(j){return `<article class="card" draggable="true" data-job-id="${j
  <div class="meta">${meta(j,true)}</div><button class="icon copy" data-copy="${j.id}" aria-label="リンクをコピー" title="リンクをコピー">${I.copy}</button>
  <h3>${esc(j.title)}</h3>${j.blocked?'<strong class="blocked">待機中・着手不可</strong>':''}${j.tags.length?`<div class="tags">${j.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div>`:''}
  ${j.task_counts.total?bar(j):''}${j.conditions?`<p>${esc(j.conditions)}</p>`:''}</article>`;}
-function filtered(list){const q=S.q.toLowerCase();return list.filter(j=>(!S.who||j.assignees.includes(S.who)||(j.tasks||[]).some(t=>t.assignee===S.who))&&(!S.prio||j.priority===S.prio)&&(!S.group||j.group_tag===S.group)&&
+function filtered(list){const q=S.q.toLowerCase();return list.filter(j=>(!S.who||j.assignees.includes(S.who)||(j.tasks||[]).some(t=>t.assignee===S.who))&&(!S.prio||j.priority===S.prio)&&S.group.every(g=>(j.group_tags||[]).includes(g))&&
   (!q||[j.title,j.conditions,j.policy,j.note].join(' ').toLowerCase().includes(q)));}
 function topbar(mode){const groups=S.tags.map(g=>g.name);
  return `<header class="top" role="toolbar" aria-label="ツールバー">  <label class="search">${I.search}<input type="search" id="q" placeholder="タイトル・内容を検索" aria-label="タイトル・内容を検索" value="${esc(S.q)}"></label>
   <select id="prio" aria-label="優先度フィルタ"><option value="">すべての優先度</option>${Object.entries(LV).map(([k,v])=>`<option value="${k}" ${S.prio===k?'selected':''}>優先度 ${v}</option>`).join('')}</select>
-  <select id="group" aria-label="グループタグフィルタ"><option value="">グループタグ すべて</option>${groups.map(g=>`<option ${S.group===g?'selected':''}>${esc(g)}</option>`).join('')}</select>
+  <select id="group" multiple aria-label="グループタグ ANDフィルタ">${groups.map(g=>`<option ${S.group.includes(g)?'selected':''}>${esc(g)}</option>`).join('')}</select>
   <button class="primary" id="new" data-action="create-job"${mode==='done'?' aria-hidden="true" disabled tabindex="-1" style="display:inline-flex;visibility:hidden"':''}>＋ ジョブを作成</button></header>`;}
 function renderBoard(mode){const m=$('#main');let list=filtered(S.jobs),body;
  if(mode==='done'||mode==='draft'){list=mode==='done'?list.filter(j=>j.status==='done'):list.filter(j=>j.status!=='done'&&!j.task_counts.total);
@@ -61,7 +61,7 @@ function renderBoard(mode){const m=$('#main');let list=filtered(S.jobs),body;
 function bindBoard(){const m=$('#main');
  m.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{S.view=b.dataset.view;localStorage.setItem('jb-view',S.view);route();});
  const q=$('#q');q.oninput=()=>{S.q=q.value;const p=q.selectionStart;route();const n=$('#q');n.focus();n.setSelectionRange(p,p);};
- $('#prio').onchange=e=>{S.prio=e.target.value;route();};$('#group').onchange=e=>{S.group=e.target.value;route();};
+ $('#prio').onchange=e=>{S.prio=e.target.value;route();};$('#group').onchange=e=>{S.group=Array.from(e.target.selectedOptions,x=>x.value);route();};
  $('#new').onclick=()=>{$('#new-form').reset();$('#new-dlg').showModal();};
  m.querySelectorAll('.pop .card').forEach(c=>c.removeAttribute('draggable'));
  m.querySelectorAll('.card').forEach(c=>{c.onclick=e=>{const cp=e.target.closest('[data-copy]');if(cp){e.stopPropagation();copy(location.origin+location.pathname+'#/job/'+cp.dataset.copy,'リンクをコピーしました');return;}location.hash='#/job/'+c.dataset.jobId;};
@@ -96,7 +96,7 @@ async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('
   <div class="fields"><label>ステータス${sel('status',[['wait','wait'],['ready','ready'],['run','run'],['done','完了']],j.status,'ステータス','data-job-field')}</label>
    <label>優先度${sel('priority',Object.entries(LV),j.priority,'優先度','data-job-field')}</label><label>重要度${sel('importance',Object.entries(LV).slice(0,3),j.importance,'重要度','data-job-field')}</label>
    <div class="jasg" style="grid-column:1/-1" role="group" aria-label="ジョブ担当者">ジョブ担当<div>${S.assignees.map(a=>`<button class="pill ${j.assignees.includes(a.name)?'on':''}" data-jasg="${esc(a.name)}" aria-pressed="${j.assignees.includes(a.name)}">${av(a.name)}${esc(a.name)}</button>`).join('')}</div></div>
-   <span></span><label style="grid-column:span 2">グループタグ${sel('group_tag',[['','グループタグなし'],...S.tags.map(g=>[g.name,g.name])],j.group_tag,'グループタグ','data-job-field')}<a href="#/master" class="mlink" data-mseg="tags">＋ マスタで管理</a></label></div>
+   <span></span><label style="grid-column:span 2">グループタグ（複数選択）<select name="group_tags" multiple data-job-field aria-label="グループタグ">${S.tags.map(g=>`<option ${(j.group_tags||[]).includes(g.name)?'selected':''}>${esc(g.name)}</option>`).join('')}</select><a href="#/master" class="mlink" data-mseg="tags">＋ マスタで管理</a></label></div>
   <section class="dz" aria-label="危険ゾーン"><h3><button class="dz-h" id="dz-toggle" aria-expanded="false" aria-controls="dz-body">危険ゾーン<svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></h3>
    <div class="dz-wrap" id="dz-body" hidden inert><div class="dz-in"><div class="dz-row"><span>ジョブとタスク・履歴を完全に削除します。</span><button class="danger-outline" id="del-job" data-action="delete-job">このジョブを削除</button></div></div></div></section>
   <details class="hist"><summary>変更履歴 ${j.history.length}</summary><ul>${j.history.map(h=>`<li>${esc(h.at.replace('T',' ').slice(0,16))} — ${esc(h.text)}</li>`).join('')}</ul></details></section>
@@ -113,7 +113,7 @@ async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('
     ${t.status==='wait'?'<strong class="blocked">待機中・着手不可</strong>':''}${waitFields(t,true)}</form></li>`).join('')}</ul></section></div></article>`;
  const m=$('#main');
  m.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>copy(b.dataset.c));
- m.querySelectorAll('[data-job-field]').forEach(el=>el.onchange=async()=>{await api('/jobs/'+j.id,{method:'PATCH',body:{[el.name]:el.value}});toast('保存しました');await load();});
+ m.querySelectorAll('[data-job-field]').forEach(el=>el.onchange=async()=>{await api('/jobs/'+j.id,{method:'PATCH',body:{[el.name]:el.multiple?Array.from(el.selectedOptions,x=>x.value):el.value}});toast('保存しました');await load();});
  m.querySelectorAll('.task select').forEach(el=>el.onchange=async()=>{await api('/tasks/'+el.closest('.task').dataset.taskId,{method:'PATCH',body:{[el.name]:el.value}});toast('保存しました');await load();});
  m.querySelectorAll('form.tbody').forEach(f=>{f.querySelector('[data-edit-task]').onclick=()=>{setEd(f,true);f.title.focus();};
   f.querySelector('[data-cancel]').onclick=()=>{f.reset();setEd(f,false);};
@@ -187,10 +187,10 @@ const tool=(name,description,props,req,fn,ro)=>({name,description,inputSchema:{t
 const R_JOB='ルール: status は wait(着手不可/待ち)/ready(着手可)/run(進行中)/done(完了→完了履歴)。priority low|normal|high|urgent, importance low|normal|high。group_tag はマスタ登録済みのみ。自動完了: 全タスクが完了するとジョブは自動で done になる（自分でジョブのステータスを変える必要はない）。done のジョブに未完了タスクが生じる（タスクを todo/doing に戻す・未完了タスクを追加）と自動で run に戻る。詳細は get_rules。',R_TASK='ルール: タスクは上から順に実行（先頭の未完了タスクの担当=現在の担当）。title必須・body任意。assignee はマスタ(list_assignees)の名前が必須。完了は status=done。全タスクが完了するとジョブは自動で done になる（自分でジョブのステータスを変える必要はない）。done のジョブに未完了タスクが生じる（タスクを todo/doing に戻す・未完了タスクを追加）と自動で run に戻る。詳細は get_rules。';
 const WEBMCP_TOOLS=[
  tool('get_rules','Crewboard の運用ルール（日本語 Markdown）。操作前に一度読むこと',{},[],()=>apiFetch('api/rules?format=md').then(r=>{if(!r.ok)throw new Error(r.status);return r.text();}),true),
- tool('list_jobs','ジョブ一覧（タスク含む。current_assignee=先頭の未完了タスクの担当）。status: wait|ready|run|done',{status:{type:'string',enum:['wait','ready','run','done']},query:{type:'string'}},[],a=>api('/jobs?'+new URLSearchParams(Object.entries({status:a.status||'',q:a.query||''}).filter(e=>e[1]))),true),
+ tool('list_jobs','ジョブ一覧（タスク含む。current_assignee=先頭の未完了タスクの担当）。status: wait|ready|run|done',{status:{type:'string',enum:['wait','ready','run','done']},query:{type:'string'},group_tags:{type:'array',items:{type:'string'}}},[],a=>api('/jobs?'+new URLSearchParams([...Object.entries({status:a.status||'',q:a.query||''}).filter(e=>e[1]),...(a.group_tags||[]).map(g=>['group_tags',g])])),true),
  tool('get_job','ジョブ詳細（タスク本文・履歴含む）',{job_id:{type:'integer'}},['job_id'],a=>api('/jobs/'+a.job_id),true),
- tool('create_job','ジョブを作成。conditions=完了条件, policy=方針, note=その他\n'+R_JOB,{title:{type:'string'},status:{type:'string',enum:['wait','ready','run']},priority:P4,importance:L3,tags:{type:'array',items:{type:'string'}},group_tag:{type:'string'},conditions:{type:'string'},policy:{type:'string'},note:{type:'string'}},['title'],a=>api('/jobs',{method:'POST',body:a})),
- tool('update_job','ジョブの項目を更新（指定した項目のみ）\n'+R_JOB,{job_id:{type:'integer'},assignees:{type:'array',items:{type:'string'}},title:{type:'string'},status:{type:'string',enum:['wait','ready','run','done']},priority:P4,importance:L3,tags:{type:'array',items:{type:'string'}},group_tag:{type:'string'},conditions:{type:'string'},policy:{type:'string'},note:{type:'string'}},['job_id'],({job_id,...b})=>api('/jobs/'+job_id,{method:'PATCH',body:b})),
+ tool('create_job','ジョブを作成。conditions=完了条件, policy=方針, note=その他\n'+R_JOB,{title:{type:'string'},status:{type:'string',enum:['wait','ready','run']},priority:P4,importance:L3,tags:{type:'array',items:{type:'string'}},group_tag:{type:'string'},group_tags:{type:'array',items:{type:'string'}},conditions:{type:'string'},policy:{type:'string'},note:{type:'string'}},['title'],a=>api('/jobs',{method:'POST',body:a})),
+ tool('update_job','ジョブの項目を更新（指定した項目のみ）\n'+R_JOB,{job_id:{type:'integer'},assignees:{type:'array',items:{type:'string'}},title:{type:'string'},status:{type:'string',enum:['wait','ready','run','done']},priority:P4,importance:L3,tags:{type:'array',items:{type:'string'}},group_tag:{type:'string'},group_tags:{type:'array',items:{type:'string'}},conditions:{type:'string'},policy:{type:'string'},note:{type:'string'}},['job_id'],({job_id,...b})=>api('/jobs/'+job_id,{method:'PATCH',body:b})),
  tool('move_job','ジョブを列移動（wait|ready|run|done）\n'+R_JOB,{job_id:{type:'integer'},status:{type:'string',enum:['wait','ready','run','done']}},['job_id','status'],a=>api('/jobs/'+a.job_id,{method:'PATCH',body:{status:a.status}})),
  tool('delete_job','ジョブとそのタスク・履歴を完全削除（元に戻せません）。誤操作防止のため confirm:true が必須',{job_id:{type:'integer'},confirm:{type:'boolean',description:'true を指定した場合のみ削除'}},['job_id','confirm'],a=>{if(a.confirm!==true)throw new Error('confirm:true が必要です');return api('/jobs/'+a.job_id,{method:'DELETE'});}),
  tool('add_task','ジョブにタスク（title, body）を追加\n'+R_TASK,{job_id:{type:'integer'},title:{type:'string'},body:{type:'string'},status:{type:'string',enum:['todo','doing','done']},assignee:{type:'string'}},['job_id','title'],({job_id,...b})=>api(`/jobs/${job_id}/tasks`,{method:'POST',body:b})),

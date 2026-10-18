@@ -17,3 +17,14 @@ waitは未完了なので全件完了には含めず、doneからwaitへ戻す�
 テストは `python -m pip install -r requirements-dev.txt` 後 `python -m pytest tests/ -q`。
 UIは `node --test tests/test_ui_auth.cjs`。DBは一時領域、HTTP試験も専用プロセスを使う。
 SQLite接続はコンテキスト終了で閉じ、Windowsでもファイルハンドルを残さない。
+
+## 複数グループタグ（task04）
+
+`job_group_tags(job_id,name,position)`を加算し、既存group_tagを起動時に登録する。
+group_tagsは順序つき配列、group_tagは先頭タグを返す互換フィールド。
+単一指定で更新すると1タグへ置換、配列の空指定で解除。両方指定すると先頭一致が必要。
+タグ名は前後空白のみ除去、大小文字・Unicode表記は区別し、登録マスタと完全一致。
+配列内重複は最初の出現を保持。同名マスタ登録は既存を保持し上書きしない。
+旧タグIDと名前は取り込み時に明示対応を指定し、曖昧な正規化・自由tagsへの代替をしない。
+RESTは `?group_tags=TagA&group_tags=TagB`、WebMCPは配列、UIは複数選択のAND。
+タグ改名は全関連へ反映、削除は該当分類だけ外す。

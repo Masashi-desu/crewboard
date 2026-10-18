@@ -251,6 +251,33 @@ class MigrationTests(unittest.TestCase):
         with db.conn() as connection:
             self.assertEqual(connection.execute("SELECT value FROM preserved_marker").fetchone()[0], "keep")
 
+    def test_multiple_groups_and_filter_and_legacy_compatibility(self):
+        db.add_group_tag("TagA"); db.add_group_tag("TagB")
+        both = db.create_job("both", group_tags=["TagA", "TagB", "TagA"])
+        single = db.create_job("single", group_tag="TagA")
+        self.assertEqual(both["group_tags"], ["TagA", "TagB"])
+        self.assertEqual(both["group_tag"], "TagA")
+        self.assertEqual([j["id"] for j in db.list_jobs(group_tags=["TagA", "TagB"])], [both["id"]])
+        response = client.get("/api/jobs?group_tags=TagA&group_tags=TagB", headers=self.headers)
+        self.assertEqual([j["id"] for j in response.json()], [both["id"]])
+        self.assertEqual(db.list_jobs(group_tags=["TagA", "absent"]), [])
+        db.update_job(single["id"], group_tags=["TagB", "TagA"])
+        self.assertEqual(db.update_job(single["id"], group_tag="TagA")["group_tags"], ["TagA"])
+        before = db.get_job(1); db.init()
+        self.assertEqual(db.get_job(1), before)
+
+    def test_group_rename_delete_and_strict_master_validation(self):
+        db.add_group_tag("TagA"); db.add_group_tag("TagB")
+        job = db.create_job("groups", group_tags=["TagA", "TagB"])
+        db.update_group_tag("TagA", new_name="Cloud")
+        self.assertEqual(db.get_job(job["id"])["group_tags"], ["Cloud", "TagB"])
+        db.delete_group_tag("Cloud")
+        self.assertEqual(db.get_job(job["id"])["group_tag"], "TagB")
+        self.assertEqual(db.get_job(job["id"])["group_tags"], ["TagB"])
+        with self.assertRaises(ValueError): db.update_job(job["id"], group_tags=["locius"])
+        with self.assertRaises(ValueError): db.create_job("conflict", group_tag="TagB", group_tags=[])
+        self.assertEqual(db.update_job(job["id"], group_tags=[])["group_tag"], "")
+
 
 class DownloadTransportTests(unittest.TestCase):
     @classmethod

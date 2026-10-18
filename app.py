@@ -1,6 +1,6 @@
 import os, contextlib, secrets
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -52,9 +52,9 @@ def get_rules() -> str:
     """Crewboard の運用ルール（日本語 Markdown）を返す。操作前に一度読むこと。"""
     return rules_text()
 @mcp.tool()
-def list_jobs(status: Optional[str]=None, query: Optional[str]=None, priority: Optional[str]=None, group_tag: Optional[str]=None) -> list:
+def list_jobs(status: Optional[str]=None, query: Optional[str]=None, priority: Optional[str]=None, group_tag: Optional[str]=None, group_tags: Optional[List[str]]=None) -> list:
     """List jobs (with tasks; current_assignee = assignee of the first not-done task). status: wait|ready|run|done. priority: low|normal|high|urgent(最優先)."""
-    return db.list_jobs(status, query, priority, group_tag)
+    return db.list_jobs(status, query, priority, group_tag, group_tags=group_tags)
 @mcp.tool()
 def get_job(job_id: int) -> dict:
     """Get a job with its tasks and history."""
@@ -181,6 +181,7 @@ class JobIn(BaseModel):
     title: Optional[str]=None; status: Optional[str]=None; priority: Optional[str]=None; importance: Optional[str]=None
     assignees: Optional[List[str]]=None; tags: Optional[List[str]]=None; group_tag: Optional[str]=None; conditions: Optional[str]=None; policy: Optional[str]=None
     note: Optional[str]=None; sort: Optional[float]=None
+    group_tags: Optional[List[str]]=None
 class TaskIn(BaseModel):
     title: Optional[str]=None; body: Optional[str]=None; status: Optional[str]=None; assignee: Optional[str]=None
     priority: Optional[str]=None; importance: Optional[str]=None; sort: Optional[float]=None
@@ -190,8 +191,8 @@ class AssigneeIn(BaseModel):
     name: str; kind: str="bot"
 
 @app.get("/api/jobs")
-def api_list(status: Optional[str]=None, q: Optional[str]=None, priority: Optional[str]=None, group_tag: Optional[str]=None):
-    return db.list_jobs(status, q, priority, group_tag)
+def api_list(status: Optional[str]=None, q: Optional[str]=None, priority: Optional[str]=None, group_tag: Optional[str]=None, group_tags: Optional[List[str]]=Query(None)):
+    return db.list_jobs(status, q, priority, group_tag, group_tags=group_tags)
 @app.post("/api/jobs", status_code=201)
 def api_create(j: JobIn):
     if not j.title: raise HTTPException(400, "title required")
