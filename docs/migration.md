@@ -51,3 +51,13 @@ sourceがui/mcpでも記録者を推測しない。配列順を保存し、同�
 取得できなかった履歴の完全性は主張しない。元履歴は変更不可。
 source_historyテーブルは移管元専用。既存historyにはcategory（既定operation）とbatch_idを加算。
 移管操作はcategory=migrationと独立バッチIDで記録し、UIでも元履歴と別表示。
+
+## 原文・Markdown・URL・旧参照（task07）
+
+jobs/tasksへdescriptionとsession_urls（JSON配列）を加算。既存conditions/policy/note/bodyは保持。
+旧descriptionを自動分割しない。CRLF・末尾改行を含む原文はDB/APIで無損失。
+表示だけCommonMark（markdown-it-py、HTML無効）へ変換する。コード・改行・リンクを扱い、
+危険なリンクを無効化し、画像はaltテキスト表示で外部取得しない。編集には原文を使う。
+関連セッションURLはHTTP(S)文字列の配列。保存中にURLへアクセスしない。
+source.referencesに明示指定されたuuid/numberのみ対応表で解決し、UIにリンクまたは未解決を表示。
+例示・通常のIssue番号から参照や依存エッジを推測しない。元本文自体は書き換えない。

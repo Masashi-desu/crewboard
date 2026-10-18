@@ -77,18 +77,21 @@ const waitFields=(t,edit=false)=>Object.entries(WAIT_FIELDS).map(([k,label])=>`$
 const waitValues=f=>Object.fromEntries(Object.keys(WAIT_FIELDS).map(k=>[k,f.elements[k].value]));
 const sourceView=s=>s?`<div class="source-ref">移管元 ${esc(s.system)}:${esc(s.number)} / UUID ${esc(s.uuid)}<pre>${esc(JSON.stringify(s,null,2))}</pre></div>`:'';
 const sourceHistoryView=events=>events?.length?`<details><summary>移管元履歴 ${events.length}件（記録者不明は推測しません）</summary>${events.map(h=>`<pre>${esc(JSON.stringify(h,null,2))}</pre>`).join('')}</details>`:'';
+const sessionView=urls=>`<div>${(urls||[]).map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`).join('<br>')}</div>`;
+const referenceView=refs=>(refs||[]).map(r=>`<div>旧参照 ${esc(JSON.stringify(r.reference))}: ${r.resolved?r.matches.map(m=>`<a href="#/job/${m.job_id}">${m.kind} #${m.new_id}</a>`).join(''):'未解決または複数候補'}</div>`).join('');
+async function renderMarkdown(root){await Promise.all(Array.from(root.querySelectorAll('[data-markdown]'),async el=>{try{const result=await api('/markdown',{method:'POST',body:{text:el.textContent}});el.innerHTML=result.html;}catch(e){/* Escaped source stays readable if rendering fails. */}}));}
 async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('#main').innerHTML='<div class="empty">ジョブが見つかりません</div>';return;}
  const tc=j.task_counts, byA={};j.tasks.forEach(t=>{byA[t.assignee]=byA[t.assignee]||{done:0,total:0};byA[t.assignee].total++;if(t.status==='done')byA[t.assignee].done++;});
  const asg=[['','未割当'],...S.assignees.map(a=>[a.name,a.name])], link=location.origin+location.pathname+'#/job/'+j.id;
- const sec=(h,name,val,rows)=>`<h2 class="${val?'':'e'}" ${val?'':'hidden'}>${h}</h2><div class="txt v">${esc(val)}</div><textarea class="e inplace txt" name="${name}" rows="${rows}" hidden aria-label="${h}">${esc(val)}</textarea>`;
+ const sec=(h,name,val,rows)=>`<h2 class="${val?'':'e'}" ${val?'':'hidden'}>${h}</h2><div class="txt v" data-markdown>${esc(val)}</div><textarea class="e inplace txt" name="${name}" rows="${rows}" hidden aria-label="${h}">${esc(val)}</textarea>`;
  const left=`<form id="edit-form" class="jleft"><div class="meta"><span class="badge ${j.status}">${j.status}</span>${meta(j)}<span class="edact">
    <button type="button" class="icon v" id="edit" aria-label="ジョブを編集"><svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
    <button type="button" class="e sm" id="cancel-edit" hidden>キャンセル</button><button class="e sm primary" hidden>保存</button></span></div>
   <h1 class="v">${esc(j.title)}</h1>${sourceView(j.source)}<textarea class="e inplace h1" name="title" rows="2" required hidden aria-label="タイトル">${esc(j.title)}</textarea>
   <div class="tags ${j.tags.length?'v':''}" ${j.tags.length?'':'hidden'}>${j.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div><input class="e inplace tagsin" name="tags" value="${esc(j.tags.join(', '))}" placeholder="タグ（カンマ区切り）" hidden aria-label="タグ">
   <div class="links"><a href="${link}">#${pad(j.id)}</a><button type="button" data-c="${esc(link)}">${I.copy}リンクをコピー</button><button type="button" data-c="${esc(j.title+' '+link)}">${I.copy}名前とリンクをコピー</button></div>
-  ${sec('完了条件','conditions',j.conditions,4)}${sec('方針','policy',j.policy,4)}
-  <div class="note ${j.note?'':'e'}" ${j.note?'':'hidden'}><b>その他</b><span class="v">${esc(j.note)}</span><textarea class="e inplace" name="note" rows="3" hidden aria-label="その他">${esc(j.note)}</textarea></div></form>`;
+  ${sec('説明（原文）','description',j.description,4)}${sec('完了条件','conditions',j.conditions,4)}${sec('方針','policy',j.policy,4)}${referenceView(j.resolved_references)}${sessionView(j.session_urls)}<label class="e" hidden>関連セッションURL（1行1件）<textarea name="session_urls">${esc((j.session_urls||[]).join('\n'))}</textarea></label>
+  <div class="note ${j.note?'':'e'}" ${j.note?'':'hidden'}><b>その他</b><span class="v" data-markdown>${esc(j.note)}</span><textarea class="e inplace" name="note" rows="3" hidden aria-label="その他">${esc(j.note)}</textarea></div></form>`;
  $('#main').innerHTML=`<article class="detail" data-job-id="${j.id}" data-status="${j.status}" aria-label="ジョブ詳細 #${j.id}">
  <div class="dtop"><button onclick="history.length>1?history.back():location.hash='#/'">← 戻る</button>ジョブ</div>
  <section class="panel" aria-label="タスクの進捗"><div class="hd"><span>タスクの進捗</span><span><b>${tc.done}</b> / ${tc.total} 完了</span></div>${bar(j)}
@@ -111,7 +114,8 @@ async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('
    <span class="tidw"><span class="tid">#${pad(j.id)}-#${t.id}</span> <button class="icon" data-c="#${pad(j.id)}-#${t.id}" aria-label="タスクIDをコピー">${I.copy}</button></span></div>
    <form class="tbody" data-task-form="${t.id}" aria-label="タスク ${i+1}"><div class="tline"><b class="ttitle v">${esc(t.title)||'<span style="color:var(--mut)">（タイトルなし）</span>'}</b><input class="e inplace ttitle" name="title" value="${esc(t.title)}" aria-label="タスクタイトル" placeholder="タイトル" hidden>
     <span class="tact"><button type="button" class="addlink v" data-edit-task>編集</button><button type="button" class="addlink e" data-cancel hidden>キャンセル</button><button class="addlink e strong" hidden>保存</button></span></div>
-    ${t.body?`<details class="tbd v"><summary>${esc(t.body)}</summary><div class="full">${esc(t.body)}</div></details>`:''}<textarea class="e inplace tbd-in" name="body" rows="2" aria-label="タスク本文" placeholder="本文" hidden>${esc(t.body)}</textarea>
+    ${t.body?`<details class="tbd v"><summary>${esc(t.body)}</summary><div class="full" data-markdown>${esc(t.body)}</div></details>`:''}<textarea class="e inplace tbd-in" name="body" rows="2" aria-label="タスク本文" placeholder="本文" hidden>${esc(t.body)}</textarea>
+    <div class="v" data-markdown>${esc(t.description)}</div><label class="e" hidden>説明（原文）<textarea name="description">${esc(t.description)}</textarea></label>${sessionView(t.session_urls)}<label class="e" hidden>関連セッションURL（1行1件）<textarea name="session_urls">${esc((t.session_urls||[]).join('\n'))}</textarea></label>${referenceView(t.resolved_references)}
     ${sourceView(t.source)}${sourceHistoryView(t.source_history)}${t.status==='wait'?'<strong class="blocked">待機中・着手不可</strong>':''}${waitFields(t,true)}</form></li>`).join('')}</ul></section></div></article>`;
  const m=$('#main');
  m.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>copy(b.dataset.c));
@@ -119,7 +123,7 @@ async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('
  m.querySelectorAll('.task select').forEach(el=>el.onchange=async()=>{await api('/tasks/'+el.closest('.task').dataset.taskId,{method:'PATCH',body:{[el.name]:el.value}});toast('保存しました');await load();});
  m.querySelectorAll('form.tbody').forEach(f=>{f.querySelector('[data-edit-task]').onclick=()=>{setEd(f,true);f.title.focus();};
   f.querySelector('[data-cancel]').onclick=()=>{f.reset();setEd(f,false);};
-  f.onsubmit=async e=>{e.preventDefault();await api('/tasks/'+f.dataset.taskForm,{method:'PATCH',body:{title:f.title.value,body:f.body.value,...waitValues(f)}});toast('保存しました');await load();};});
+  f.onsubmit=async e=>{e.preventDefault();await api('/tasks/'+f.dataset.taskForm,{method:'PATCH',body:{title:f.title.value,body:f.body.value,description:f.elements.description.value,session_urls:f.elements.session_urls.value.split('\n').filter(Boolean),...waitValues(f)}});toast('保存しました');await load();};});
  m.querySelectorAll('[data-jasg]').forEach(b=>b.onclick=async()=>{const n=b.dataset.jasg,cur=j.assignees.includes(n)?j.assignees.filter(x=>x!==n):[...j.assignees,n];await api(`/jobs/${j.id}/assignees`,{method:'PUT',body:{assignees:cur}});toast('保存しました');await load();});
  m.querySelectorAll('.tbd .full').forEach(x=>x.onclick=()=>x.parentElement.open=false);
  m.querySelectorAll('[data-mseg]').forEach(a=>a.onclick=()=>{S.mseg=a.dataset.mseg;});
@@ -136,7 +140,8 @@ async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('
  $('#add-form').onsubmit=async e=>{e.preventDefault();const f=e.target;await api(`/jobs/${j.id}/tasks`,{method:'POST',body:{title:f.title.value,body:f.body.value,assignee:f.assignee.value,status:f.status.value,...waitValues(f)}});toast('タスクを追加しました');await load();};
  const ef=$('#edit-form');setEd(ef,editing);
  $('#edit').onclick=()=>{editing=true;setEd(ef,true);ef.title.focus();};$('#cancel-edit').onclick=()=>{editing=false;ef.reset();setEd(ef,false);};
- ef.onsubmit=async e=>{e.preventDefault();const f=new FormData(ef);await api('/jobs/'+j.id,{method:'PATCH',body:{title:f.get('title'),conditions:f.get('conditions'),policy:f.get('policy'),note:f.get('note'),tags:f.get('tags').split(',').map(s=>s.trim()).filter(Boolean)}});editing=false;toast('保存しました');await load();};}
+ ef.onsubmit=async e=>{e.preventDefault();const f=new FormData(ef);await api('/jobs/'+j.id,{method:'PATCH',body:{title:f.get('title'),description:f.get('description'),session_urls:f.get('session_urls').split('\n').filter(Boolean),conditions:f.get('conditions'),policy:f.get('policy'),note:f.get('note'),tags:f.get('tags').split(',').map(s=>s.trim()).filter(Boolean)}});editing=false;toast('保存しました');await load();};
+ await renderMarkdown(m);}
 function openDelete(j){const d=$('#del-dlg'),f=$('#del-form'),ok=$('#del-ok');f.reset();ok.disabled=true;
  $('#del-num').textContent='#'+pad(j.id)+' 「'+j.title+'」';$('#del-num2').textContent=String(j.id);
  f.confirm.oninput=()=>{ok.disabled=f.confirm.value.replace(/^#?0*/,'')!==String(j.id);};

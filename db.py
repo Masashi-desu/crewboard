@@ -1,5 +1,6 @@
 import sqlite3, json, os, datetime, uuid
 import config
+from urllib.parse import urlsplit
 DB = config.DB_PATH
 JOB_STATUSES = ["wait", "ready", "run", "done"]
 TASK_STATUSES = ["todo", "doing", "wait", "done"]
@@ -60,6 +61,9 @@ def init():
         for table in ("jobs", "tasks"):
             if "version" not in [r[1] for r in c.execute(f"PRAGMA table_info({table})")]:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+            for field, default in (("description", ""), ("session_urls", "[]")):
+                if field not in [r[1] for r in c.execute(f"PRAGMA table_info({table})")]:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {field} TEXT NOT NULL DEFAULT '{default}'")
         for field in ("category", "batch_id"):
             if field not in [r[1] for r in c.execute("PRAGMA table_info(history)")]:
                 c.execute(f"ALTER TABLE history ADD COLUMN {field} TEXT NOT NULL DEFAULT '{'operation' if field == 'category' else ''}'")
@@ -100,7 +104,7 @@ def _source(c, kind, entity_id):
 
 def _validate_source(source):
     if source is None: return
-    allowed = {"system", "uuid", "number", "created_at", "updated_at", "completed_at", "version"}
+    allowed = {"system", "uuid", "number", "created_at", "updated_at", "completed_at", "version", "references"}
     if not isinstance(source, dict) or not {"system", "uuid", "number"} <= set(source) or set(source) - allowed:
         raise ValueError("source requires system, uuid, number and supported metadata")
     if any(not isinstance(source[k], str) or not source[k].strip() for k in ("system", "uuid", "number")):
@@ -109,6 +113,29 @@ def _validate_source(source):
         if source.get(key) is not None: _timestamp(source[key])
     if "version" in source and source["version"] is not None and (type(source["version"]) is not int or source["version"] < 0):
         raise ValueError("source version must be a nonnegative integer or null")
+    for reference in source.get("references", []):
+        if not isinstance(reference, dict) or not (reference.get("uuid") or reference.get("number")):
+            raise ValueError("explicit source references require uuid or number")
+        if set(reference) - {"system", "uuid", "number", "label"}: raise ValueError("unknown source reference field")
+
+def _urls(urls):
+    if not isinstance(urls, list): raise ValueError("session_urls must be an array")
+    for url in urls:
+        if not isinstance(url, str) or any(ord(ch) < 32 for ch in url): raise ValueError("invalid session URL")
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("session URLs must be HTTP(S) URLs without credentials")
+    return json.dumps(urls, ensure_ascii=False)
+
+def _resolved_references(c, source):
+    result = []
+    for reference in (source or {}).get("references", []):
+        sql, args = "SELECT s.*,t.job_id AS parent FROM source_records s LEFT JOIN tasks t ON t.id=s.task_id WHERE s.system=?", [reference.get("system", source["system"])]
+        for key in ("uuid", "number"):
+            if reference.get(key): sql += f" AND s.{key}=?"; args.append(reference[key])
+        matches = [dict(kind="job" if r["job_id"] else "task", new_id=r["job_id"] or r["task_id"], job_id=r["job_id"] or r["parent"]) for r in c.execute(sql,args)]
+        result.append(dict(reference=reference, matches=matches, resolved=len(matches)==1))
+    return result
 
 def _timestamp(value):
     try:
@@ -152,6 +179,8 @@ def _immutable_source(c, kind, entity_id, source):
 def _task(c, row):
     result = dict(row); result["source"] = _source(c, "task", result["id"])
     result["source_history"] = _source_history(c, result["source"])
+    result["session_urls"] = json.loads(result["session_urls"])
+    result["resolved_references"] = _resolved_references(c, result["source"])
     return result
 
 def source_refs(system, uuid=None, number=None):
@@ -173,6 +202,8 @@ def _job(c, r, with_tasks=True):
     d["group_tags"] = [x[0] for x in c.execute("SELECT name FROM job_group_tags WHERE job_id=? ORDER BY position,name", (d["id"],))]
     d["source"] = _source(c, "job", d["id"])
     d["source_history"] = _source_history(c, d["source"])
+    d["session_urls"] = json.loads(d["session_urls"])
+    d["resolved_references"] = _resolved_references(c, d["source"])
     ts = [_task(c,x) for x in c.execute("SELECT * FROM tasks WHERE job_id=? ORDER BY sort,id",(d["id"],))]
     d["task_counts"] = {s: sum(1 for x in ts if x["status"]==s) for s in TASK_STATUSES}; d["task_counts"]["total"]=len(ts)
     d["current_assignee"] = next((x["assignee"] for x in ts if x["status"] != "done"), None) or None
@@ -202,7 +233,7 @@ def get_job(job_id):
         d = _job(c, r); d["history"] = [dict(x) for x in c.execute("SELECT id,at,text,category,batch_id FROM history WHERE job_id=? ORDER BY id DESC",(job_id,))]
         return d
 
-JOB_FIELDS = ["assignees","title","status","priority","importance","tags","group_tag","group_tags","conditions","policy","note","sort"]
+JOB_FIELDS = ["assignees","title","status","priority","importance","tags","group_tag","group_tags","conditions","policy","note","sort","description","session_urls"]
 
 def _groups(group_tag, group_tags):
     names = list(dict.fromkeys(n.strip() for n in (group_tags if group_tags is not None else ([group_tag] if group_tag else []))))
@@ -221,7 +252,7 @@ def _check(f, v):
     if f=="priority" and v not in PRIORITIES: raise ValueError(f"priority must be one of {PRIORITIES}")
     if f=="importance" and v not in LEVELS: raise ValueError(f"importance must be one of {LEVELS}")
 
-def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None, group_tags=None, source=None, source_history=None):
+def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None, group_tags=None, source=None, source_history=None, description="", session_urls=None):
     for f,v in (("status",status),("priority",priority),("importance",importance)): _check(f,v)
     groups = _groups(group_tag, group_tags); group_tag = groups[0] if groups else ""
     assignees = assignees or []
@@ -234,6 +265,7 @@ def create_job(title, status="wait", priority="normal", importance="normal", tag
                         (title,status,priority,importance,json.dumps(tags or [],ensure_ascii=False),group_tag,conditions,policy,note,json.dumps(assignees,ensure_ascii=False),mx,t,t))
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(cur.lastrowid,t,"作成"))
         jid = cur.lastrowid
+        c.execute("UPDATE jobs SET description=?,session_urls=? WHERE id=?", (description,_urls(session_urls or []),jid))
         _set_groups(c, jid, groups)
         _insert_source(c, "job", jid, source)
         _insert_source_history(c, source, source_history)
@@ -251,6 +283,7 @@ def update_job(job_id, **kw):
         kw["group_tag"] = groups[0] if groups else ""
     for k,v in kw.items(): _check(k,v)
     if "tags" in kw: kw["tags"] = json.dumps(kw["tags"], ensure_ascii=False)
+    if "session_urls" in kw: kw["session_urls"] = _urls(kw["session_urls"])
     if "assignees" in kw:
         known = [a["name"] for a in list_assignees()]
         bad = [a for a in kw["assignees"] if a not in known]
@@ -283,7 +316,7 @@ def _check_task(kw):
         if f in kw and kw[f] not in LEVELS: raise ValueError(f"{f} must be one of {LEVELS}")
 
 def add_task(job_id, title="", body="", status="todo", assignee=None, priority="normal", importance="normal",
-             wait_reason="", wait_for="", wait_note="", resume_condition="", source=None, source_history=None):
+             wait_reason="", wait_for="", wait_note="", resume_condition="", source=None, source_history=None, description="", session_urls=None):
     if not (title or "").strip(): raise ValueError("task title is required")
     _check_task(dict(status=status, assignee=assignee, priority=priority, importance=importance)); get_job(job_id); t = now()
     with conn() as c:
@@ -294,6 +327,7 @@ def add_task(job_id, title="", body="", status="todo", assignee=None, priority="
                   (wait_reason,wait_for,wait_note,resume_condition,cur.lastrowid))
         _insert_source(c, "task", cur.lastrowid, source)
         _insert_source_history(c, source, source_history)
+        c.execute("UPDATE tasks SET description=?,session_urls=? WHERE id=?", (description,_urls(session_urls or []),cur.lastrowid))
         if source: migration_audit(c, job_id, "manual:"+str(uuid.uuid4()), f"移管元タスク #{cur.lastrowid} 情報を保存")
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(job_id,t,f"タスク #{cur.lastrowid} 追加"))
         if status == "done": _auto_done(c, job_id, t)
@@ -318,12 +352,13 @@ def _auto_reopen(c, job_id, t):
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(job_id,t,"未完了タスクがあるため自動で進行中(run)に戻した"))
 
 TASK_FIELDS = ["title","body","status","assignee","priority","importance","sort",
-               "wait_reason","wait_for","wait_note","resume_condition"]
+               "wait_reason","wait_for","wait_note","resume_condition","description","session_urls"]
 def update_task(task_id, **kw):
     if "source_history" in kw: raise ValueError("source_history is immutable; supply at creation")
     if "source" in kw:
         with conn() as c: _immutable_source(c, "task", task_id, kw.pop("source"))
     kw = {k:v for k,v in kw.items() if k in TASK_FIELDS and (v is not None or k == "assignee")}; _check_task(kw); t = now()
+    if "session_urls" in kw: kw["session_urls"] = _urls(kw["session_urls"])
     if "title" in kw and not kw["title"].strip(): raise ValueError("task title is required")
     with conn() as c:
         r = c.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()

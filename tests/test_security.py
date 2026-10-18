@@ -336,6 +336,42 @@ class MigrationTests(unittest.TestCase):
         job = db.create_job("immutable", source=source)
         with self.assertRaises(ValueError): db.update_job(job["id"], source_history=[])
 
+    def test_markdown_and_session_urls_roundtrip_without_splitting(self):
+        raw = '# 見出し\r\n\r\n```python\r\nprint("<原文>")\r\n```\r\n[リンク](https://example.com/?x=1&y=2)\n末尾\n'
+        urls = ["https://example.com/session/1?q=%E5%8E%9F%E6%96%87#x", "http://127.0.0.1:1234/saved-only"]
+        job = db.create_job("markdown", description=raw, session_urls=urls, conditions="existing")
+        task = db.add_task(job["id"], "task", description=raw, body="既存本文", session_urls=urls)
+        saved = db.get_job(job["id"])
+        self.assertEqual(saved["description"], raw)
+        self.assertEqual(saved["session_urls"], urls)
+        self.assertEqual(saved["conditions"], "existing")
+        self.assertEqual(saved["tasks"][0]["description"], raw)
+        self.assertEqual(saved["tasks"][0]["body"], "既存本文")
+        self.assertEqual(db.update_task(task["id"], description=raw)["description"], raw)
+
+    def test_safe_markdown_rendering_and_no_external_image_requests(self):
+        from markdown_view import render
+        html = render('# heading\n\n```js\n<script>\n```\n<script>alert(1)</script>\n[x](javascript:alert(1))\n![alt](https://example.com/img)\n[ok](https://example.com)')
+        self.assertIn("<h1>heading</h1>", html)
+        self.assertIn("<pre><code", html)
+        self.assertNotIn("<script>", html)
+        self.assertNotIn('href="javascript:', html)
+        self.assertNotIn("<img", html)
+        self.assertIn('href="https://example.com"', html)
+        response = client.post("/api/markdown", json={"text":"**bold**\nnext"}, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("<strong>bold</strong>", response.json()["html"])
+        with self.assertRaises(ValueError): db.create_job("unsafe", session_urls=["javascript:alert(1)"])
+
+    def test_only_explicit_source_references_resolve(self):
+        target = db.create_job("target", source=dict(system="old", uuid="target", number="#0001"))
+        source = dict(system="old", uuid="referrer", number="#0002", references=[dict(uuid="target"), dict(number="#9999")])
+        job = db.create_job("referrer", source=source, description="Issue #0001 and example #9999")
+        self.assertTrue(job["resolved_references"][0]["resolved"])
+        self.assertEqual(job["resolved_references"][0]["matches"][0]["new_id"], target["id"])
+        self.assertFalse(job["resolved_references"][1]["resolved"])
+        self.assertEqual(db.create_job("plain", description="#0001")["resolved_references"], [])
+
 
 class DownloadTransportTests(unittest.TestCase):
     @classmethod

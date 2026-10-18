@@ -184,6 +184,7 @@ class JobIn(BaseModel):
     group_tags: Optional[List[str]]=None
     source: Optional[dict]=None
     source_history: Optional[List[dict]]=None
+    description: Optional[str]=None; session_urls: Optional[List[str]]=None
 class TaskIn(BaseModel):
     title: Optional[str]=None; body: Optional[str]=None; status: Optional[str]=None; assignee: Optional[str]=None
     priority: Optional[str]=None; importance: Optional[str]=None; sort: Optional[float]=None
@@ -191,6 +192,7 @@ class TaskIn(BaseModel):
     wait_note: Optional[str]=None; resume_condition: Optional[str]=None
     source: Optional[dict]=None
     source_history: Optional[List[dict]]=None
+    description: Optional[str]=None; session_urls: Optional[List[str]]=None
 class AssigneeIn(BaseModel):
     name: str; kind: str="bot"
 
@@ -218,6 +220,12 @@ def api_assignees(): return db.list_assignees(True)
 @app.get("/api/source_refs")
 def api_source_refs(system: str, uuid: Optional[str]=None, number: Optional[str]=None):
     return wrap(db.source_refs, system, uuid, number)
+class MarkdownIn(BaseModel):
+    text: str
+@app.post("/api/markdown")
+def api_markdown(payload: MarkdownIn):
+    from markdown_view import render
+    return {"html": render(payload.text)}
 class AssignIn(BaseModel):
     assignees: List[str]
 @app.put("/api/jobs/{job_id}/assignees")
