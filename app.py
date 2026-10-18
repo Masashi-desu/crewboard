@@ -78,14 +78,15 @@ def delete_job(job_id: int) -> dict:
     """Permanently delete a job with its tasks and history (not moved to 完了履歴)."""
     return db.delete_job(job_id)
 @mcp.tool()
-def add_task(job_id: int, title: str, body: str="", status: str="todo", assignee: str="", priority: str="normal", importance: str="normal") -> dict:
-    """Add a task to a job. status todo|doing|done; assignee from list_assignees (default: first human assignee)."""
-    return db.add_task(job_id, title, body, status, assignee, priority, importance)
+def add_task(job_id: int, title: str, body: str="", status: str="todo", assignee: Optional[str]=None, priority: str="normal", importance: str="normal",
+             wait_reason: str="", wait_for: str="", wait_note: str="", resume_condition: str="") -> dict:
+    """Add a task. wait blocks execution; null/empty assignee remains unassigned."""
+    return db.add_task(job_id, title, body, status, assignee, priority, importance, wait_reason, wait_for, wait_note, resume_condition)
 @mcp.tool()
 def update_task(task_id: int, title: Optional[str]=None, body: Optional[str]=None, status: Optional[str]=None, assignee: Optional[str]=None,
                 priority: Optional[str]=None, importance: Optional[str]=None) -> dict:
     """Update a task (e.g. status='done' to complete it)."""
-    return db.update_task(task_id, title=title, body=body, status=status, assignee=assignee, priority=priority, importance=importance)
+    return db.update_task(task_id, **{k:v for k,v in dict(title=title, body=body, status=status, assignee=assignee, priority=priority, importance=importance).items() if v is not None})
 @mcp.tool()
 def delete_task(task_id: int) -> dict:
     """Delete a task."""
@@ -183,6 +184,8 @@ class JobIn(BaseModel):
 class TaskIn(BaseModel):
     title: Optional[str]=None; body: Optional[str]=None; status: Optional[str]=None; assignee: Optional[str]=None
     priority: Optional[str]=None; importance: Optional[str]=None; sort: Optional[float]=None
+    wait_reason: Optional[str]=None; wait_for: Optional[str]=None
+    wait_note: Optional[str]=None; resume_condition: Optional[str]=None
 class AssigneeIn(BaseModel):
     name: str; kind: str="bot"
 
@@ -200,9 +203,9 @@ def api_update(job_id: int, j: JobIn): return wrap(db.update_job, job_id, **j.mo
 @app.delete("/api/jobs/{job_id}")
 def api_delete(job_id: int): return wrap(db.delete_job, job_id)
 @app.post("/api/jobs/{job_id}/tasks", status_code=201)
-def api_add_task(job_id: int, t: TaskIn): return wrap(db.add_task, job_id, **t.model_dump(exclude_none=True, exclude={"sort"}))
+def api_add_task(job_id: int, t: TaskIn): return wrap(db.add_task, job_id, **t.model_dump(exclude_unset=True, exclude={"sort"}))
 @app.patch("/api/tasks/{task_id}")
-def api_update_task(task_id: int, t: TaskIn): return wrap(db.update_task, task_id, **t.model_dump())
+def api_update_task(task_id: int, t: TaskIn): return wrap(db.update_task, task_id, **t.model_dump(exclude_unset=True))
 @app.delete("/api/tasks/{task_id}")
 def api_delete_task(task_id: int): return db.delete_task(task_id)
 @app.get("/api/assignees")

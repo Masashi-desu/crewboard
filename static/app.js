@@ -1,5 +1,5 @@
 'use strict';
-const LV={low:'低',normal:'通常',high:'高',urgent:'最優先'}, TS={todo:'未着手',doing:'進行中',done:'完了'}, COLS=['wait','ready','run'];
+const LV={low:'低',normal:'通常',high:'高',urgent:'最優先'}, TS={todo:'未着手',doing:'進行中',wait:'待機（ブロック中）',done:'完了'}, COLS=['wait','ready','run'];
 const S={jobs:[],assignees:[],tags:[],mseg:'assignees',view:'kanban'/* matrix toggle removed; saved prefs ignored */,q:'',prio:'',group:'',who:''};
 const $=(s,r=document)=>r.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const av=(n,cls='av')=>{const a=S.assignees.find(x=>x.name===n);return a&&a.icon?`<img class="${cls}" src="${esc(String(a.icon).replace(/^\//,''))}" alt="" aria-hidden="true" loading="lazy">`:'';};
@@ -34,7 +34,7 @@ const meta=(j,onCard)=>`${onCard?(j.current_assignee?`<span class="cur" data-cur
 const bar=j=>`<div class="bar" role="img" aria-label="タスク ${j.task_counts.done}/${j.task_counts.total} 完了, 進行中 ${j.task_counts.doing}">${(j.tasks||[]).map(t=>`<i class="${t.status}" title="${esc(t.title)}（${esc(t.assignee)}）" data-task-status="${t.status}" data-assignee="${esc(t.assignee)}"></i>`).join('')}</div>`;
 function card(j){return `<article class="card" draggable="true" data-job-id="${j.id}" data-status="${j.status}" data-priority="${j.priority}" data-importance="${j.importance}" aria-label="ジョブ #${j.id} ${esc(j.title)}" tabindex="0">
  <div class="meta">${meta(j,true)}</div><button class="icon copy" data-copy="${j.id}" aria-label="リンクをコピー" title="リンクをコピー">${I.copy}</button>
- <h3>${esc(j.title)}</h3>${j.tags.length?`<div class="tags">${j.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div>`:''}
+ <h3>${esc(j.title)}</h3>${j.blocked?'<strong class="blocked">待機中・着手不可</strong>':''}${j.tags.length?`<div class="tags">${j.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div>`:''}
  ${j.task_counts.total?bar(j):''}${j.conditions?`<p>${esc(j.conditions)}</p>`:''}</article>`;}
 function filtered(list){const q=S.q.toLowerCase();return list.filter(j=>(!S.who||j.assignees.includes(S.who)||(j.tasks||[]).some(t=>t.assignee===S.who))&&(!S.prio||j.priority===S.prio)&&(!S.group||j.group_tag===S.group)&&
   (!q||[j.title,j.conditions,j.policy,j.note].join(' ').toLowerCase().includes(q)));}
@@ -72,9 +72,12 @@ function bindBoard(){const m=$('#main');
 async function moveJob(id,status){await api('/jobs/'+id,{method:'PATCH',body:{status}});toast(`#${pad(id)} → ${status}`);await load();}
 function sel(name,opts,val,label,attrs=''){return `<select name="${name}" aria-label="${label}" ${attrs}>${opts.map(([k,v])=>`<option value="${esc(k)}" ${k===val?'selected':''}>${esc(v)}</option>`).join('')}</select>`;}
 let editing=false;
+const WAIT_FIELDS={wait_reason:'待ち理由',wait_for:'待ち先',wait_note:'待ち補足',resume_condition:'再開条件'};
+const waitFields=(t,edit=false)=>Object.entries(WAIT_FIELDS).map(([k,label])=>`${edit?`<div class="v">${label}: ${esc(t[k])}</div>`:''}<label class="${edit?'e':''}" ${edit?'hidden':''}>${label}<textarea name="${k}" rows="2">${esc(t[k]||'')}</textarea></label>`).join('');
+const waitValues=f=>Object.fromEntries(Object.keys(WAIT_FIELDS).map(k=>[k,f.elements[k].value]));
 async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('#main').innerHTML='<div class="empty">ジョブが見つかりません</div>';return;}
  const tc=j.task_counts, byA={};j.tasks.forEach(t=>{byA[t.assignee]=byA[t.assignee]||{done:0,total:0};byA[t.assignee].total++;if(t.status==='done')byA[t.assignee].done++;});
- const asg=S.assignees.map(a=>[a.name,a.name]), link=location.origin+location.pathname+'#/job/'+j.id;
+ const asg=[['','未割当'],...S.assignees.map(a=>[a.name,a.name])], link=location.origin+location.pathname+'#/job/'+j.id;
  const sec=(h,name,val,rows)=>`<h2 class="${val?'':'e'}" ${val?'':'hidden'}>${h}</h2><div class="txt v">${esc(val)}</div><textarea class="e inplace txt" name="${name}" rows="${rows}" hidden aria-label="${h}">${esc(val)}</textarea>`;
  const left=`<form id="edit-form" class="jleft"><div class="meta"><span class="badge ${j.status}">${j.status}</span>${meta(j)}<span class="edact">
    <button type="button" class="icon v" id="edit" aria-label="ジョブを編集"><svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
@@ -99,21 +102,22 @@ async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('
   <details class="hist"><summary>変更履歴 ${j.history.length}</summary><ul>${j.history.map(h=>`<li>${esc(h.at.replace('T',' ').slice(0,16))} — ${esc(h.text)}</li>`).join('')}</ul></details></section>
  <section aria-label="タスク一覧"><div class="tasks-h"><h2>タスク <span class="n">${tc.done} / ${tc.total}</span></h2><button class="addlink" id="add-task" data-action="add-task">＋ 追加</button></div>
   <form class="addform" id="add-form" hidden aria-label="タスクを追加"><input name="title" placeholder="タイトル" aria-label="タスクタイトル" required autocomplete="off"><textarea name="body" rows="2" placeholder="本文（任意）" aria-label="タスク本文" style="flex-basis:100%"></textarea>
-   ${sel('assignee',asg,(S.assignees.find(a=>a.kind==='human')||S.assignees[0]||{}).name||'','担当')}${sel('status',Object.entries(TS),'todo','状態')}<button class="primary">追加</button></form>
+   ${sel('assignee',asg,'','担当')}${sel('status',Object.entries(TS),'todo','状態')}${waitFields({})}<button class="primary">追加</button></form>
   <ul style="list-style:none;margin:0;padding:0">${j.tasks.map((t,i)=>`<li class="task ${t.status}" data-task-id="${t.id}" data-task-status="${t.status}" data-assignee="${esc(t.assignee)}" aria-label="タスク ${i+1} ${TS[t.status]} 担当 ${esc(t.assignee)}">
    <div class="thead"><span class="num">${two(i+1)}</span>${sel('status',Object.entries(TS),t.status,'タスク状態')}
-   <span class="who">${av(t.assignee)||I.user} 担当：${sel('assignee',asg,t.assignee,'担当')}</span>
+   <span class="who">${av(t.assignee)||I.user} 担当：${sel('assignee',asg,t.assignee||'','担当')}</span>
    <span class="tidw"><span class="tid">#${pad(j.id)}-#${t.id}</span> <button class="icon" data-c="#${pad(j.id)}-#${t.id}" aria-label="タスクIDをコピー">${I.copy}</button></span></div>
    <form class="tbody" data-task-form="${t.id}" aria-label="タスク ${i+1}"><div class="tline"><b class="ttitle v">${esc(t.title)||'<span style="color:var(--mut)">（タイトルなし）</span>'}</b><input class="e inplace ttitle" name="title" value="${esc(t.title)}" aria-label="タスクタイトル" placeholder="タイトル" hidden>
     <span class="tact"><button type="button" class="addlink v" data-edit-task>編集</button><button type="button" class="addlink e" data-cancel hidden>キャンセル</button><button class="addlink e strong" hidden>保存</button></span></div>
-    ${t.body?`<details class="tbd v"><summary>${esc(t.body)}</summary><div class="full">${esc(t.body)}</div></details>`:''}<textarea class="e inplace tbd-in" name="body" rows="2" aria-label="タスク本文" placeholder="本文" hidden>${esc(t.body)}</textarea></form></li>`).join('')}</ul></section></div></article>`;
+    ${t.body?`<details class="tbd v"><summary>${esc(t.body)}</summary><div class="full">${esc(t.body)}</div></details>`:''}<textarea class="e inplace tbd-in" name="body" rows="2" aria-label="タスク本文" placeholder="本文" hidden>${esc(t.body)}</textarea>
+    ${t.status==='wait'?'<strong class="blocked">待機中・着手不可</strong>':''}${waitFields(t,true)}</form></li>`).join('')}</ul></section></div></article>`;
  const m=$('#main');
  m.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>copy(b.dataset.c));
  m.querySelectorAll('[data-job-field]').forEach(el=>el.onchange=async()=>{await api('/jobs/'+j.id,{method:'PATCH',body:{[el.name]:el.value}});toast('保存しました');await load();});
  m.querySelectorAll('.task select').forEach(el=>el.onchange=async()=>{await api('/tasks/'+el.closest('.task').dataset.taskId,{method:'PATCH',body:{[el.name]:el.value}});toast('保存しました');await load();});
  m.querySelectorAll('form.tbody').forEach(f=>{f.querySelector('[data-edit-task]').onclick=()=>{setEd(f,true);f.title.focus();};
   f.querySelector('[data-cancel]').onclick=()=>{f.reset();setEd(f,false);};
-  f.onsubmit=async e=>{e.preventDefault();await api('/tasks/'+f.dataset.taskForm,{method:'PATCH',body:{title:f.title.value,body:f.body.value}});toast('保存しました');await load();};});
+  f.onsubmit=async e=>{e.preventDefault();await api('/tasks/'+f.dataset.taskForm,{method:'PATCH',body:{title:f.title.value,body:f.body.value,...waitValues(f)}});toast('保存しました');await load();};});
  m.querySelectorAll('[data-jasg]').forEach(b=>b.onclick=async()=>{const n=b.dataset.jasg,cur=j.assignees.includes(n)?j.assignees.filter(x=>x!==n):[...j.assignees,n];await api(`/jobs/${j.id}/assignees`,{method:'PUT',body:{assignees:cur}});toast('保存しました');await load();});
  m.querySelectorAll('.tbd .full').forEach(x=>x.onclick=()=>x.parentElement.open=false);
  m.querySelectorAll('[data-mseg]').forEach(a=>a.onclick=()=>{S.mseg=a.dataset.mseg;});
@@ -127,7 +131,7 @@ async function renderDetail(id){let j;try{j=await api('/jobs/'+id);}catch(e){$('
  if(/\/(danger|delete)$/.test(location.hash))setDz(true,false);
  if(/\/delete$/.test(location.hash))openDelete(j);
  $('#add-task').onclick=()=>{const f=$('#add-form');f.hidden=!f.hidden;if(!f.hidden)f.title.focus();};
- $('#add-form').onsubmit=async e=>{e.preventDefault();const f=e.target;await api(`/jobs/${j.id}/tasks`,{method:'POST',body:{title:f.title.value,body:f.body.value,assignee:f.assignee.value,status:f.status.value}});toast('タスクを追加しました');await load();};
+ $('#add-form').onsubmit=async e=>{e.preventDefault();const f=e.target;await api(`/jobs/${j.id}/tasks`,{method:'POST',body:{title:f.title.value,body:f.body.value,assignee:f.assignee.value,status:f.status.value,...waitValues(f)}});toast('タスクを追加しました');await load();};
  const ef=$('#edit-form');setEd(ef,editing);
  $('#edit').onclick=()=>{editing=true;setEd(ef,true);ef.title.focus();};$('#cancel-edit').onclick=()=>{editing=false;ef.reset();setEd(ef,false);};
  ef.onsubmit=async e=>{e.preventDefault();const f=new FormData(ef);await api('/jobs/'+j.id,{method:'PATCH',body:{title:f.get('title'),conditions:f.get('conditions'),policy:f.get('policy'),note:f.get('note'),tags:f.get('tags').split(',').map(s=>s.trim()).filter(Boolean)}});editing=false;toast('保存しました');await load();};}

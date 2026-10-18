@@ -2,14 +2,19 @@ import sqlite3, json, os, datetime
 import config
 DB = config.DB_PATH
 JOB_STATUSES = ["wait", "ready", "run", "done"]
-TASK_STATUSES = ["todo", "doing", "done"]
+TASK_STATUSES = ["todo", "doing", "wait", "done"]
 LEVELS = ["low", "normal", "high"]
 PRIORITIES = ["low", "normal", "high", "urgent"]
 
 def now(): return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
+class Connection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try: return super().__exit__(*args)
+        finally: self.close()
+
 def conn():
-    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
+    c = sqlite3.connect(DB, timeout=10, factory=Connection); c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON"); return c
 
 def init():
@@ -34,6 +39,9 @@ def init():
         c.execute("INSERT OR IGNORE INTO group_tags(name) SELECT DISTINCT group_tag FROM jobs WHERE group_tag!=''")
         if "icon" not in [r[1] for r in c.execute("PRAGMA table_info(assignees)")]:
             c.execute("ALTER TABLE assignees ADD COLUMN icon TEXT DEFAULT ''")
+        for field in ("wait_reason", "wait_for", "wait_note", "resume_condition"):
+            if field not in [r[1] for r in c.execute("PRAGMA table_info(tasks)")]:
+                c.execute(f"ALTER TABLE tasks ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
         if not c.execute("SELECT 1 FROM assignees").fetchone():
             c.executemany("INSERT INTO assignees(name,kind,sort) VALUES(?,?,?)", [("Owner","human",0),("Agent Bot","bot",1)])
         if not c.execute("SELECT 1 FROM jobs").fetchone(): seed(c)
@@ -69,6 +77,10 @@ def _job(c, r, with_tasks=True):
     ts = [dict(x) for x in c.execute("SELECT * FROM tasks WHERE job_id=? ORDER BY sort,id",(d["id"],))]
     d["task_counts"] = {s: sum(1 for x in ts if x["status"]==s) for s in TASK_STATUSES}; d["task_counts"]["total"]=len(ts)
     d["current_assignee"] = next((x["assignee"] for x in ts if x["status"] != "done"), None) or None
+    first = next((x for x in ts if x["status"] != "done"), None)
+    d["current_task_status"] = first["status"] if first else None
+    d["blocked"] = bool(first and first["status"] == "wait")
+    d["can_start"] = bool(first and first["status"] in ("todo", "doing") and first["assignee"])
     if with_tasks: d["tasks"] = ts
     return d
 
@@ -139,19 +151,20 @@ def delete_job(job_id):
 
 def _check_task(kw):
     if "status" in kw and kw["status"] not in TASK_STATUSES: raise ValueError(f"task status must be one of {TASK_STATUSES}")
-    if "assignee" in kw and kw["assignee"] not in [a["name"] for a in list_assignees()]: raise ValueError("unknown assignee; see list_assignees")
+    if kw.get("assignee") and kw["assignee"] not in [a["name"] for a in list_assignees()]: raise ValueError("unknown assignee; see list_assignees")
     for f in ("priority","importance"):
         if f in kw and kw[f] not in LEVELS: raise ValueError(f"{f} must be one of {LEVELS}")
 
-def add_task(job_id, title="", body="", status="todo", assignee="", priority="normal", importance="normal"):
+def add_task(job_id, title="", body="", status="todo", assignee=None, priority="normal", importance="normal",
+             wait_reason="", wait_for="", wait_note="", resume_condition=""):
     if not (title or "").strip(): raise ValueError("task title is required")
-    if not assignee: assignee = default_assignee()
-    if not assignee: raise ValueError("task assignee is required (see list_assignees)")
     _check_task(dict(status=status, assignee=assignee, priority=priority, importance=importance)); get_job(job_id); t = now()
     with conn() as c:
         mx = c.execute("SELECT COALESCE(MAX(sort),0)+1 FROM tasks WHERE job_id=?",(job_id,)).fetchone()[0]
         cur = c.execute("INSERT INTO tasks(job_id,title,body,status,assignee,priority,importance,sort,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (job_id,title,body,status,assignee,priority,importance,mx,t,t))
+        c.execute("UPDATE tasks SET wait_reason=?,wait_for=?,wait_note=?,resume_condition=? WHERE id=?",
+                  (wait_reason,wait_for,wait_note,resume_condition,cur.lastrowid))
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(job_id,t,f"タスク #{cur.lastrowid} 追加"))
         if status == "done": _auto_done(c, job_id, t)
         else: _auto_reopen(c, job_id, t)
@@ -174,9 +187,10 @@ def _auto_reopen(c, job_id, t):
         c.execute("UPDATE jobs SET status='run',updated_at=? WHERE id=?",(t,job_id))
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(job_id,t,"未完了タスクがあるため自動で進行中(run)に戻した"))
 
-TASK_FIELDS = ["title","body","status","assignee","priority","importance","sort"]
+TASK_FIELDS = ["title","body","status","assignee","priority","importance","sort",
+               "wait_reason","wait_for","wait_note","resume_condition"]
 def update_task(task_id, **kw):
-    kw = {k:v for k,v in kw.items() if k in TASK_FIELDS and v is not None}; _check_task(kw); t = now()
+    kw = {k:v for k,v in kw.items() if k in TASK_FIELDS and (v is not None or k == "assignee")}; _check_task(kw); t = now()
     if "title" in kw and not kw["title"].strip(): raise ValueError("task title is required")
     with conn() as c:
         r = c.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
@@ -185,7 +199,7 @@ def update_task(task_id, **kw):
             c.execute(f"UPDATE tasks SET {','.join(k+'=?' for k in kw)},updated_at=? WHERE id=?", [*kw.values(), t, task_id])
             c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(r["job_id"],t,f"タスク #{task_id} 更新: "+", ".join(kw)))
             if kw.get("status") == "done" and r["status"] != "done": _auto_done(c, r["job_id"], t)
-            elif kw.get("status") in ("todo","doing") and r["status"] == "done": _auto_reopen(c, r["job_id"], t)
+            elif kw.get("status") in ("todo","doing","wait") and r["status"] == "done": _auto_reopen(c, r["job_id"], t)
         return dict(c.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone())
 
 def delete_task(task_id):

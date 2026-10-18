@@ -25,6 +25,14 @@ API_TOKEN = "test-api-token"
 MCP_TOKEN = "test-mcp-token"
 
 
+def stop_test_process(process):
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
+    else:
+        process.terminate()
+    process.wait(timeout=10)
+
+
 def setUpModule():
     global sandbox, environment, app, avatars, db, client
     sandbox = tempfile.TemporaryDirectory(prefix="crewboard-tests-")
@@ -182,6 +190,68 @@ class AvatarSecurityTests(unittest.TestCase):
         self.assertTrue((Path(avatars.DIR) / Path(second).name).is_file())
 
 
+class MigrationTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="crewboard-migration-tests-")
+        self.db_patch = patch.object(db, "DB", str(Path(self.directory.name) / "jobs.db"))
+        self.db_patch.start()
+        db.init()
+        self.headers = {"Authorization": f"Bearer {API_TOKEN}"}
+
+    def tearDown(self):
+        self.db_patch.stop()
+        self.directory.cleanup()
+
+    def test_wait_unassigned_roundtrip_and_ordered_blocking(self):
+        job = db.create_job("wait test")
+        fields = dict(wait_reason="承認待ち\n詳細", wait_for="Owner", wait_note="原文", resume_condition="承認後")
+        response = client.post(f"/api/jobs/{job['id']}/tasks", headers=self.headers,
+                               json=dict(title="blocked", status="wait", assignee=None, **fields))
+        self.assertEqual(response.status_code, 201)
+        first = response.json()
+        self.assertIsNone(first["assignee"])
+        db.add_task(job["id"], "later", assignee="Owner")
+        saved = db.get_job(job["id"])
+        self.assertTrue(saved["blocked"])
+        self.assertFalse(saved["can_start"])
+        self.assertIsNone(saved["current_assignee"])
+        self.assertEqual(saved["task_counts"]["wait"], 1)
+        for key, value in fields.items(): self.assertEqual(saved["tasks"][0][key], value)
+        db.update_task(first["id"], status="done")
+        self.assertEqual(db.get_job(job["id"])["current_assignee"], "Owner")
+
+    def test_null_patch_does_not_change_omitted_assignee(self):
+        job = db.create_job("patch test")
+        task = db.add_task(job["id"], "assigned", assignee="Owner")
+        url = f"/api/tasks/{task['id']}"
+        self.assertEqual(client.patch(url, json={"body":"edited"}, headers=self.headers).json()["assignee"], "Owner")
+        self.assertIsNone(client.patch(url, json={"assignee":None}, headers=self.headers).json()["assignee"])
+        self.assertEqual(db.add_task(job["id"], "empty", assignee="")["assignee"], "")
+        self.assertIsNone(db.add_task(job["id"], "omitted")["assignee"])
+
+    def test_wait_prevents_completion_and_reopens_done_job(self):
+        job = db.create_job("transitions")
+        task = db.add_task(job["id"], "task", status="done", assignee=None)
+        self.assertEqual(db.get_job(job["id"])["status"], "done")
+        db.update_task(task["id"], status="wait", resume_condition="review")
+        self.assertEqual(db.get_job(job["id"])["status"], "run")
+        self.assertTrue(db.get_job(job["id"])["blocked"])
+        db.update_task(task["id"], status="todo")
+        self.assertFalse(db.get_job(job["id"])["can_start"])
+        db.update_task(task["id"], assignee="Owner")
+        self.assertTrue(db.get_job(job["id"])["can_start"])
+
+    def test_additive_wait_schema_preserves_existing_data(self):
+        before = db.get_job(1)
+        with db.conn() as connection:
+            connection.execute("CREATE TABLE preserved_marker(value TEXT)")
+            connection.execute("INSERT INTO preserved_marker VALUES('keep')")
+        db.init(); db.init()
+        self.assertEqual(db.get_job(1), before)
+        with db.conn() as connection:
+            self.assertEqual(connection.execute("SELECT value FROM preserved_marker").fetchone()[0], "keep")
+
+
 class DownloadTransportTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -316,15 +386,13 @@ class RunningServerTests(unittest.TestCase):
             except httpx.HTTPError: pass
             if cls.process.poll() is not None: break
             time.sleep(0.05)
-        cls.process.terminate()
-        cls.process.wait(timeout=5)
+        stop_test_process(cls.process)
         cls.directory.cleanup()
         raise RuntimeError("disposable server failed to start")
 
     @classmethod
     def tearDownClass(cls):
-        cls.process.terminate()
-        cls.process.wait(timeout=10)
+        stop_test_process(cls.process)
         cls.directory.cleanup()
 
     def test_sse_header_and_query_tokens_and_change_delivery(self):

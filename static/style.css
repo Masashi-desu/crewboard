@@ -258,3 +258,5 @@ select.inplace{background-color:var(--bg)}
 .joblist .card .copy{grid-area:copy;position:static}
 .joblist .empty{padding:16px 8px}
 @media (max-width:640px){.joblist .card{grid-template-columns:1fr auto;grid-template-areas:"meta copy" "title title" "tags tags" "bar bar" "desc desc"}}
+/* Waiting tasks remain visible and block the ordered execution queue. */
+.blocked{display:block;color:#b45309;margin:6px 0}.bar i.wait{background:#d97706}.task.wait{border-left:3px solid #d97706}.dot.wait{background:#d97706}
