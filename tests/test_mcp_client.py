@@ -22,6 +22,9 @@ async def main():
             print("assign", J(await s.call_tool("assign_job", {"job_id": j["id"], "assignees": ["Owner"]}))["assignees"])
             await s.call_tool("move_job", {"job_id": j["id"], "status": "run"})
             g = J(await s.call_tool("get_job", {"job_id": j["id"]}))
+            assert g["status"] == "run" and g["task_counts"]["done"] == 1
+            assert g["assignees"] == ["Owner"] and g["tasks"][0]["body"] == "本文B"
             print("job", g["status"], g["task_counts"], g["tasks"][0]["title"], g["tasks"][0]["body"]); await s.call_tool("delete_job", {"job_id": j["id"]})
             print("matrix cells", len(J(await s.call_tool("get_matrix", {}))["cells"])); print("assignees", [a["name"] for a in J(await s.call_tool("list_assignees", {}))])
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

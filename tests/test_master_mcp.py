@@ -10,7 +10,7 @@ def J(r):
     sc=r.structuredContent
     if sc: return sc.get("result", sc)
     v=[json.loads(c.text) for c in r.content]
-    return v[0] if len(v)==1 and isinstance(v[0], dict) else v, sys
+    return v[0] if len(v)==1 and isinstance(v[0], dict) else v
 sys.path.insert(0,'.')
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -23,5 +23,8 @@ async def m():
             print("tags",[t["name"] for t in L(await c("list_group_tags"))])
             await c("delete_group_tag",{"name":"MCPタグ"}); await c("add_assignee",{"name":"Zbot"}); await c("update_assignee",{"name":"Zbot","new_name":"Zbot2"})
             r=await c("delete_assignee",{"name":"Agent Bot"}); print("block:", r.isError, r.content[0].text[:60])
+            assert r.isError
             await c("delete_assignee",{"name":"Zbot2"}); print("assignees",[a["name"] for a in L(await c("list_assignees"))])
-asyncio.run(m())
+            assert "Zbot2" not in [a["name"] for a in L(await c("list_assignees"))]
+if __name__ == "__main__":
+    asyncio.run(m())
