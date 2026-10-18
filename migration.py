@@ -17,6 +17,15 @@ def payload_hash(value):
     return hashlib.sha256(canonical(value).encode('utf-8')).hexdigest()
 
 
+def map_job_wait_fields(job, reason_labels):
+    """Map original Job Board wait fields explicitly, without losing memo text."""
+    reason_id = job.get('wait_reason_id')
+    if reason_id and reason_id not in reason_labels:
+        raise ValueError('unresolved job wait reason: '+str(reason_id))
+    return dict(wait_reason=reason_labels[reason_id] if reason_id else '',
+                wait_for=job.get('waiting_on') or '', wait_note=job.get('wait_note') or '')
+
+
 def _batch(c, batch_id):
     row = c.execute('SELECT * FROM migration_batches WHERE batch_id=?', (batch_id,)).fetchone()
     return dict(row) if row else None
@@ -61,7 +70,7 @@ def _prepare(c, payload):
             errors.append('unresolved assignee: '+str(value)); return None
         return assignee_map[value]
 
-    job_fields = {'title','status','priority','importance','sort','description','conditions','policy','note','tags','assignees','group_tags','source','source_history','session_urls','tasks'}
+    job_fields = {'title','status','priority','importance','sort','description','conditions','policy','note','tags','assignees','group_tags','source','source_history','session_urls','tasks','wait_reason','wait_for','wait_note'}
     task_fields = {'title','body','status','priority','importance','sort','description','assignee','wait_reason','wait_for','wait_note','resume_condition','source','source_history','session_urls'}
     job_required = {'title','status','sort','description','assignees','group_tags','source','tasks'}
     task_required = {'title','status','sort','description','assignee','source'}
@@ -114,6 +123,9 @@ def _prepare(c, payload):
         except (ValueError,TypeError,KeyError) as error: errors.append(str(error))
         for field in ('priority','importance','source_history','session_urls'):
             if field not in raw: warnings.append(f"{kind} {source['uuid']}: {field} omitted; {'normal' if field in ('priority','importance') else 'empty array'}")
+        if kind == 'job' and raw.get('status') == 'wait':
+            for field in ('wait_reason','wait_for','wait_note'):
+                if field not in raw: warnings.append(f"job {source['uuid']}: {field} omitted; verify original wait information")
         item_hash = payload_hash({'kind':kind,'parent':parent,'original':raw,'target':target})
         existing = c.execute('SELECT * FROM migration_items WHERE system=? AND uuid=?',key).fetchone()
         ref = c.execute('SELECT * FROM source_records WHERE system=? AND uuid=?',key).fetchone()

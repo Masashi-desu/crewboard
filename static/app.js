@@ -76,6 +76,10 @@ const WAIT_FIELDS={wait_reason:'待ち理由',wait_for:'待ち先',wait_note:'�
 const waitFields=(t,edit=false)=>Object.entries(WAIT_FIELDS).map(([k,label])=>`${edit?`<div class="v">${label}: ${esc(t[k])}</div>`:''}<label class="${edit?'e':''}" ${edit?'hidden':''}>${label}<textarea name="${k}" rows="2">
 ${esc(t[k]||'')}</textarea></label>`).join('');
 const waitValues=f=>Object.fromEntries(Object.keys(WAIT_FIELDS).map(k=>[k,f.elements[k].value]));
+const JOB_WAIT_FIELDS={wait_reason:'待ち理由',wait_for:'待ち先',wait_note:'待機メモ'};
+const jobWaitFields=j=>`<section class="job-wait" aria-label="ジョブの待機情報">${Object.entries(JOB_WAIT_FIELDS).map(([k,label])=>`<label class="job-wait-field"><span>${label}</span><div class="job-wait-slot"><div class="v">${esc(j[k])}</div><textarea class="e inplace" name="${k}" rows="2" hidden>
+${esc(j[k])}</textarea></div></label>`).join('')}</section>`;
+const jobWaitValues=(form,j)=>Object.fromEntries(Object.keys(JOB_WAIT_FIELDS).map(k=>[k,originalText(form.get(k),j[k])]));
 const originalText=(value,original)=>value===String(original??'').replace(/\r\n?/g,'\n')?original:value;
 const sourceView=s=>s?`<div class="source-ref">移管元 ${esc(s.system)}:${esc(s.number)} / UUID ${esc(s.uuid)}<details><summary>元日時・元version</summary>${Object.entries({created_at:'元作成日時',updated_at:'元更新日時',completed_at:'元完了日時',version:'元version'}).map(([k,label])=>`<div>${label}: ${esc(s[k]??'不明')}</div>`).join('')}</details></div>`:'';
 const sourceHistoryView=events=>events?.length?`<details><summary>移管元履歴 ${events.length}件（記録者不明は推測しません）</summary>${events.map(h=>`<pre>${esc(JSON.stringify(h,null,2))}</pre>`).join('')}</details>`:'';
@@ -94,7 +98,7 @@ ${esc(val)}</textarea>`;
 ${esc(j.title)}</textarea>
   <div class="tags ${j.tags.length?'v':''}" ${j.tags.length?'':'hidden'}>${j.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div><input class="e inplace tagsin" name="tags" value="${esc(j.tags.join(', '))}" placeholder="タグ（カンマ区切り）" hidden aria-label="タグ">
   <div class="links"><a href="${link}">#${pad(j.id)}</a><button type="button" data-c="${esc(link)}">${I.copy}リンクをコピー</button><button type="button" data-c="${esc(j.title+' '+link)}">${I.copy}名前とリンクをコピー</button></div>
-  ${sec('説明（原文）','description',j.description,4)}${sec('完了条件','conditions',j.conditions,4)}${sec('方針','policy',j.policy,4)}${referenceView(j.resolved_references)}${sessionView(j.session_urls)}<label class="e" hidden>関連セッションURL（1行1件）<textarea name="session_urls">
+  ${jobWaitFields(j)}${sec('説明（原文）','description',j.description,4)}${sec('完了条件','conditions',j.conditions,4)}${sec('方針','policy',j.policy,4)}${referenceView(j.resolved_references)}${sessionView(j.session_urls)}<label class="e" hidden>関連セッションURL（1行1件）<textarea name="session_urls">
 ${esc((j.session_urls||[]).join('\n'))}</textarea></label>
   <div class="note ${j.note?'':'e'}" ${j.note?'':'hidden'}><b>その他</b><span class="v" data-markdown>${esc(j.note)}</span><textarea class="e inplace" name="note" rows="3" hidden aria-label="その他">
 ${esc(j.note)}</textarea></div></form>`;
@@ -151,7 +155,7 @@ ${esc((t.session_urls||[]).join('\n'))}</textarea></label>${referenceView(t.reso
  $('#add-form').onsubmit=async e=>{e.preventDefault();const f=e.target;await api(`/jobs/${j.id}/tasks`,{method:'POST',body:{title:f.title.value,body:f.body.value,description:f.elements.description.value,session_urls:f.elements.session_urls.value.split('\n').filter(Boolean),assignee:f.assignee.value,status:f.status.value,priority:f.priority.value,importance:f.importance.value,...(f.sort.value===''?{}:{sort:Number(f.sort.value)}),...waitValues(f)}});toast('タスクを追加しました');await load();};
  const ef=$('#edit-form');setEd(ef,editing);
  $('#edit').onclick=()=>{editing=true;setEd(ef,true);ef.title.focus();};$('#cancel-edit').onclick=()=>{editing=false;ef.reset();setEd(ef,false);};
- ef.onsubmit=async e=>{e.preventDefault();const f=new FormData(ef);await api('/jobs/'+j.id,{method:'PATCH',body:{title:originalText(f.get('title'),j.title),description:originalText(f.get('description'),j.description),session_urls:f.get('session_urls').split('\n').filter(Boolean),conditions:originalText(f.get('conditions'),j.conditions),policy:originalText(f.get('policy'),j.policy),note:originalText(f.get('note'),j.note),tags:f.get('tags').split(',').map(s=>s.trim()).filter(Boolean)}});editing=false;toast('保存しました');await load();};
+ ef.onsubmit=async e=>{e.preventDefault();const f=new FormData(ef);await api('/jobs/'+j.id,{method:'PATCH',body:{title:originalText(f.get('title'),j.title),description:originalText(f.get('description'),j.description),session_urls:f.get('session_urls').split('\n').filter(Boolean),conditions:originalText(f.get('conditions'),j.conditions),policy:originalText(f.get('policy'),j.policy),note:originalText(f.get('note'),j.note),tags:f.get('tags').split(',').map(s=>s.trim()).filter(Boolean),...jobWaitValues(f,j)}});editing=false;toast('保存しました');await load();};
  await renderMarkdown(m);}
 function openDelete(j){const d=$('#del-dlg'),f=$('#del-form'),ok=$('#del-ok');f.reset();ok.disabled=true;
  $('#del-num').textContent='#'+pad(j.id)+' 「'+j.title+'」';$('#del-num2').textContent=String(j.id);

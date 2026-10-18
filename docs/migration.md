@@ -14,6 +14,11 @@ waitは未完了なので全件完了には含めず、doneからwaitへ戻す�
 再開は明示的な状態変更のみ。待機情報を状態変更で消さない。
 既存行・担当者・履歴・マスタにはこの変更で代入しない。
 
+ジョブ側にも `wait_reason`（待ち理由）、`wait_for`（待ち先）、`wait_note`（待機メモ）の
+TEXT列を既定空文字で加算する。REST/MCP/WebMCPの作成・更新・取得と取り込みで共通。
+UIは常に同じ3つの固定枠に値とインラインエディターを切り替え、ラベルと後続要素を動かさない。
+状態が変わっても待機情報を消さず、PATCH省略は維持・空文字指定は明示解除とする。
+
 テストは `python -m pip install -r requirements-dev.txt` 後 `python -m pytest tests/ -q`。
 UIは `node --test tests/test_ui_auth.cjs`。DBは一時領域、HTTP試験も専用プロセスを使う。
 SQLite接続はコンテキスト終了で閉じ、Windowsでもファイルハンドルを残さない。
@@ -75,6 +80,12 @@ source.referencesに明示指定されたuuid/numberのみ対応表で解決し�
 jobsは通常フィールドにtasks配列を加える。各ジョブはtitle/status/sort/description/assignees/group_tags/source/tasks、
 各タスクはtitle/status/sort/description/assignee/sourceが必須。
 各sourceはsystem/uuid/numberとcreated_at/updated_at/completed_at/versionを明示する（未知はnull）。
+ジョブのwait_reason/wait_for/wait_noteを取り込み可能。移管元からの変換は
+`migration.map_job_wait_fields(job, reason_labels)` をジョブ入力へ展開する。
+`reason_labels` は元board.reasonsの `{id: label}`。元wait_reason_idをラベルへ、
+waiting_onを待ち先へ、wait_noteをメモへ写す。未知の理由IDはエラーにし、メモの改行は変換しない。
+既存の検証用build.pyにはこの展開が無いため、再検証用の作業コピーでは
+`jobs.append(dict(..., **migration.map_job_wait_fields(j, reasons)))` を追加する（原本は変更しない）。
 省略時normalとなるpriority/importance、空配列となるsource_history/session_urlsはドライランで報告する。
 未対応項目・未解決担当/タグ/明示参照・履歴関連・重複UUID/履歴ID・件数不一致は中止する。
 expected_countsはjobs/tasks/wait/unassigned/historyの全件数。指定しない場合も予定件数を返す。

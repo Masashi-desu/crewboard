@@ -43,6 +43,9 @@ def init():
         for field in ("wait_reason", "wait_for", "wait_note", "resume_condition"):
             if field not in [r[1] for r in c.execute("PRAGMA table_info(tasks)")]:
                 c.execute(f"ALTER TABLE tasks ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
+        for field in ("wait_reason", "wait_for", "wait_note"):
+            if field not in [r[1] for r in c.execute("PRAGMA table_info(jobs)")]:
+                c.execute(f"ALTER TABLE jobs ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
         if not c.execute("SELECT 1 FROM assignees").fetchone():
             c.executemany("INSERT INTO assignees(name,kind,sort) VALUES(?,?,?)", [("Owner","human",0),("Agent Bot","bot",1)])
         if not c.execute("SELECT 1 FROM jobs").fetchone(): seed(c)
@@ -246,7 +249,7 @@ def get_job(job_id):
         d = _job(c, r); d["history"] = [dict(x) for x in c.execute("SELECT id,at,text,category,batch_id FROM history WHERE job_id=? ORDER BY id DESC",(job_id,))]
         return d
 
-JOB_FIELDS = ["assignees","title","status","priority","importance","tags","group_tag","group_tags","conditions","policy","note","sort","description","session_urls"]
+JOB_FIELDS = ["assignees","title","status","priority","importance","tags","group_tag","group_tags","conditions","policy","note","sort","description","session_urls","wait_reason","wait_for","wait_note"]
 
 def _groups(group_tag, group_tags):
     names = list(dict.fromkeys(n.strip() for n in (group_tags if group_tags is not None else ([group_tag] if group_tag else []))))
@@ -265,7 +268,7 @@ def _check(f, v):
     if f=="priority" and v not in PRIORITIES: raise ValueError(f"priority must be one of {PRIORITIES}")
     if f=="importance" and v not in LEVELS: raise ValueError(f"importance must be one of {LEVELS}")
 
-def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None, group_tags=None, source=None, source_history=None, description="", session_urls=None, sort=None):
+def create_job(title, status="wait", priority="normal", importance="normal", tags=None, group_tag="", conditions="", policy="", note="", assignees=None, group_tags=None, source=None, source_history=None, description="", session_urls=None, sort=None, wait_reason="", wait_for="", wait_note=""):
     if not isinstance(title,str) or not title.strip(): raise ValueError("job title is required")
     for f,v in (("status",status),("priority",priority),("importance",importance)): _check(f,v)
     groups = _groups(group_tag, group_tags); group_tag = groups[0] if groups else ""
@@ -281,6 +284,7 @@ def create_job(title, status="wait", priority="normal", importance="normal", tag
         c.execute("INSERT INTO history(job_id,at,text) VALUES(?,?,?)",(cur.lastrowid,t,"作成"))
         jid = cur.lastrowid
         c.execute("UPDATE jobs SET description=?,session_urls=? WHERE id=?", (description,_urls(session_urls or []),jid))
+        c.execute("UPDATE jobs SET wait_reason=?,wait_for=?,wait_note=? WHERE id=?", (wait_reason,wait_for,wait_note,jid))
         _set_groups(c, jid, groups)
         _insert_source(c, "job", jid, source)
         _insert_source_history(c, source, source_history)

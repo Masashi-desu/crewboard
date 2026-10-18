@@ -57,6 +57,9 @@ class JobPatch(StrictIn):
     sort: int | float = Field(default=None, allow_inf_nan=False, description='昇順。同順位は新ID昇順。')
     description: str = Field(default=None)
     session_urls: list[str] = Field(default=None)
+    wait_reason: str = Field(default=None)
+    wait_for: str = Field(default=None)
+    wait_note: str = Field(default=None)
 
 
 class JobCreate(JobPatch):

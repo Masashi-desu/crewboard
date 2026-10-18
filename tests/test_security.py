@@ -417,6 +417,49 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(job['session_urls'],next(j['session_urls'] for j in payload['jobs'] if j['source']==job['source']))
             self.assertTrue(job['tasks'][0]['session_urls'][0].startswith('codex://threads/'))
 
+    def test_job_wait_fields_roundtrip_rest_mcp_and_shared_web_schema(self):
+        import asyncio, tool_contracts
+        fields=dict(wait_reason='判断待ち',wait_for='担当者\n確認先',wait_note='元メモ\r\n末尾\r\n')
+        response=client.post('/api/jobs',headers=self.headers,json=dict(title='waiting job',status='wait',**fields))
+        self.assertEqual(response.status_code,201,response.text)
+        job=response.json()
+        for key,value in fields.items(): self.assertEqual(job[key],value)
+        saved=asyncio.run(app.mcp._tool_manager.call_tool('update_job',dict(job_id=job['id'],wait_reason='回答待ち')))
+        self.assertEqual(saved['wait_note'],fields['wait_note'])
+        self.assertEqual(saved['wait_reason'],'回答待ち')
+        patched=client.patch(f"/api/jobs/{job['id']}",headers=self.headers,json=dict(wait_note='',wait_for='新しい待ち先')).json()
+        self.assertEqual(patched['wait_note'],'')
+        self.assertEqual(patched['wait_for'],'新しい待ち先')
+        for name in ('create_job','update_job'):
+            for key in fields: self.assertIn(key,tool_contracts.schemas()[name]['properties'])
+        self.assertEqual(client.patch(f"/api/jobs/{job['id']}",headers=self.headers,json={'wait_reason':None}).status_code,422)
+
+    def test_additive_job_wait_columns_preserve_existing_rows(self):
+        fields=('wait_reason','wait_for','wait_note')
+        before=db.get_job(1)
+        with db.conn() as c:
+            for field in fields: c.execute(f'ALTER TABLE jobs DROP COLUMN {field}')
+        db.init(); db.init()
+        saved=db.get_job(1)
+        self.assertEqual(saved,before)
+        for field in fields: self.assertEqual(saved[field],'')
+
+    def test_job_wait_mapping_preserves_source_reason_and_memo_on_import(self):
+        import migration
+        raw=dict(wait_reason_id='approval',waiting_on='原文の待ち先',wait_note='待機メモ\r\nそのまま')
+        fields=migration.map_job_wait_fields(raw,{'approval':'判断待ち'})
+        self.assertEqual(fields,dict(wait_reason='判断待ち',wait_for='原文の待ち先',wait_note=raw['wait_note']))
+        self.assertEqual(migration.map_job_wait_fields({},{}),dict(wait_reason='',wait_for='',wait_note=''))
+        with self.assertRaises(ValueError): migration.map_job_wait_fields(raw,{})
+        payload=self.migration_payload('job-wait-batch')
+        payload['jobs'][0].update(fields,status='wait')
+        self.migration_backup(payload)
+        self.assertEqual(migration.dry_run(payload)['status'],'valid')
+        with patch.object(migration.config,'MIGRATION_ENABLED',True): result=migration.apply(payload)
+        saved=db.get_job(result['ids'][0]['new_id'])
+        for key,value in fields.items(): self.assertEqual(saved[key],value)
+        self.assertEqual(saved['status'],'wait')
+
     def migration_payload(self, batch_id="batch-1"):
         def source(uid,number):
             return dict(system="old",uuid=uid,number=number,created_at="2020-01-01T00:00:00+09:00",

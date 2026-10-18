@@ -137,3 +137,21 @@ test('session links display codex URLs safely and never link unsupported schemes
  assert.ok(!html.includes('<script>'));
  assert.ok(html.includes('rel="noopener noreferrer"'));
 });
+
+test('job wait editors use fixed slots and preserve unchanged source newlines',()=>{
+ const context=vm.createContext({});
+ const escSource=source.slice(source.indexOf('const $='),source.indexOf('\nconst av='));
+ const waitSource=source.slice(source.indexOf('const JOB_WAIT_FIELDS='),source.indexOf('\nconst sourceView='));
+ vm.runInContext(escSource+'\n'+waitSource+'\nglobalThis.jobWaitFields=jobWaitFields;globalThis.jobWaitValues=jobWaitValues;',context);
+ const original={wait_reason:'判断待ち',wait_for:'確認先',wait_note:'\r\n原文\r\n<img src=x>\r\n'};
+ const html=context.jobWaitFields(original);
+ assert.equal((html.match(/class="job-wait-slot"/g)||[]).length,3);
+ assert.equal((html.match(/class="v"/g)||[]).length,3);
+ assert.equal((html.match(/class="e inplace"/g)||[]).length,3);
+ assert.ok(!html.includes('<img src=x>'));
+ const form=new Map(Object.entries(original).map(([key,value])=>[key,value.replace(/\r\n/g,'\n')]));
+ const values=context.jobWaitValues(form,original);
+ assert.equal(values.wait_note,original.wait_note);
+ const css=fs.readFileSync(path.join(__dirname,'..','static','style.css'),'utf8');
+ assert.match(css,/\.job-wait-slot\{height:[^}]+\}/);
+});
