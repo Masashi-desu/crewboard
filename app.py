@@ -182,11 +182,13 @@ class JobIn(BaseModel):
     assignees: Optional[List[str]]=None; tags: Optional[List[str]]=None; group_tag: Optional[str]=None; conditions: Optional[str]=None; policy: Optional[str]=None
     note: Optional[str]=None; sort: Optional[float]=None
     group_tags: Optional[List[str]]=None
+    source: Optional[dict]=None
 class TaskIn(BaseModel):
     title: Optional[str]=None; body: Optional[str]=None; status: Optional[str]=None; assignee: Optional[str]=None
     priority: Optional[str]=None; importance: Optional[str]=None; sort: Optional[float]=None
     wait_reason: Optional[str]=None; wait_for: Optional[str]=None
     wait_note: Optional[str]=None; resume_condition: Optional[str]=None
+    source: Optional[dict]=None
 class AssigneeIn(BaseModel):
     name: str; kind: str="bot"
 
@@ -200,7 +202,7 @@ def api_create(j: JobIn):
 @app.get("/api/jobs/{job_id}")
 def api_get(job_id: int): return wrap(db.get_job, job_id)
 @app.patch("/api/jobs/{job_id}")
-def api_update(job_id: int, j: JobIn): return wrap(db.update_job, job_id, **j.model_dump())
+def api_update(job_id: int, j: JobIn): return wrap(db.update_job, job_id, **j.model_dump(exclude_unset=True))
 @app.delete("/api/jobs/{job_id}")
 def api_delete(job_id: int): return wrap(db.delete_job, job_id)
 @app.post("/api/jobs/{job_id}/tasks", status_code=201)
@@ -211,6 +213,9 @@ def api_update_task(task_id: int, t: TaskIn): return wrap(db.update_task, task_i
 def api_delete_task(task_id: int): return db.delete_task(task_id)
 @app.get("/api/assignees")
 def api_assignees(): return db.list_assignees(True)
+@app.get("/api/source_refs")
+def api_source_refs(system: str, uuid: Optional[str]=None, number: Optional[str]=None):
+    return wrap(db.source_refs, system, uuid, number)
 class AssignIn(BaseModel):
     assignees: List[str]
 @app.put("/api/jobs/{job_id}/assignees")

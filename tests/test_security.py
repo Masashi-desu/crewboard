@@ -278,6 +278,35 @@ class MigrationTests(unittest.TestCase):
         with self.assertRaises(ValueError): db.create_job("conflict", group_tag="TagB", group_tags=[])
         self.assertEqual(db.update_job(job["id"], group_tags=[])["group_tag"], "")
 
+    def test_source_numbers_are_namespaced_and_never_merge_existing_jobs(self):
+        before = [db.get_job(j["id"]) for j in db.list_jobs()]
+        source = dict(system="Job Board", uuid="job-uuid-1", number="#0001")
+        imported = db.create_job(before[0]["title"], source=source)
+        self.assertNotEqual(imported["id"], 1)
+        other = db.create_job("other", source=dict(system="Another", uuid="job-uuid-1", number="#0001"))
+        refs = client.get("/api/source_refs", params={"system":"Job Board", "number":"#0001"}, headers=self.headers).json()
+        self.assertEqual([r["new_id"] for r in refs], [imported["id"]])
+        self.assertNotEqual(refs[0]["new_id"], other["id"])
+        self.assertEqual(db.source_refs("Job Board", uuid=source["uuid"]), refs)
+        for original in before: self.assertEqual(db.get_job(original["id"]), original)
+        self.assertEqual(db.list_jobs(q="Job Board:#0001")[0]["id"], imported["id"])
+
+    def test_source_duplicate_atomicity_immutability_and_task_mapping(self):
+        source = dict(system="old", uuid="job-uuid", number="#0001")
+        job = db.create_job("native", source=source)
+        count = len(db.list_jobs())
+        with self.assertRaises(ValueError): db.create_job("duplicate", source=source)
+        self.assertEqual(len(db.list_jobs()), count)
+        with self.assertRaises(ValueError): db.add_task(job["id"], "duplicate UUID", source=source)
+        self.assertEqual(db.get_job(job["id"])["tasks"], [])
+        task = db.add_task(job["id"], "source task", source=dict(system="old", uuid="task-uuid", number="#0001-01"))
+        self.assertEqual(db.source_refs("old", uuid="task-uuid")[0]["job_id"], job["id"])
+        self.assertEqual(task["source"]["number"], "#0001-01")
+        self.assertEqual(db.update_job(job["id"], source=source)["source"], source)
+        with self.assertRaises(ValueError): db.update_job(job["id"], title="bad", source=dict(source, number="#0002"))
+        self.assertEqual(db.get_job(job["id"])["title"], "native")
+        with self.assertRaises(ValueError): db.update_task(task["id"], source=None)
+
 
 class DownloadTransportTests(unittest.TestCase):
     @classmethod
