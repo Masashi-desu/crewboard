@@ -1,4 +1,4 @@
-"""Assignee avatar processing: any png/jpg/webp/svg -> 128px square webp under <data dir>/avatars/."""
+"""Assignee avatar processing: any png/jpg/webp/svg -> 128px square webp (aspect kept, transparent padding) under <data dir>/avatars/."""
 import io, os, hashlib, base64, binascii, re, http.client, ipaddress, socket, ssl, time
 from urllib.parse import urlsplit, quote
 from PIL import Image, ImageOps
@@ -31,7 +31,8 @@ def _to_webp(raw: bytes) -> bytes:
     try: im.load()
     except Exception as e: raise ValueError("invalid image") from e
     im = ImageOps.exif_transpose(im).convert("RGBA")
-    im = ImageOps.fit(im, (128, 128), Image.LANCZOS)
+    im = ImageOps.contain(im, (128, 128), Image.LANCZOS)  # keep whole image (no crop)
+    canvas = Image.new("RGBA", (128, 128), (0, 0, 0, 0)); canvas.paste(im, ((128 - im.width) // 2, (128 - im.height) // 2), im); im = canvas
     out = io.BytesIO(); im.save(out, "WEBP", quality=88); return out.getvalue()
 
 def decode_b64(s: str) -> bytes:
