@@ -173,3 +173,31 @@ test('overlay scrollbar hides native bars and computes thumb geometry without la
  assert.equal(geom(100,100000,0,96).size,24);
  assert.equal(geom(500,1000,250,496).ratio*(496-248),500);
 });
+
+test('group tag dropdown lists all tags with an all option and keeps AND multi-select',()=>{
+ const context=vm.createContext({});
+ const escSource=source.slice(source.indexOf('const $='),source.indexOf('\nconst av='));
+ const ddSource=source.slice(source.indexOf('const DD_OPEN='),source.indexOf('\nfunction topbar('));
+ vm.runInContext(escSource+'\n'+ddSource+'\nglobalThis.tagDD=tagDD;globalThis.tagDDValue=tagDDValue;globalThis.tagDDLabel=tagDDLabel;',context);
+ const ALL='\u3059\u3079\u3066';
+ const fresh=context.tagDD('group',['A','TagB','<b>'],[],ALL,'filter');
+ assert.equal((fresh.match(/type="checkbox"/g)||[]).length,4);
+ assert.match(fresh,/data-all checked>/);
+ assert.match(fresh,/class="tagdd-l">\u3059\u3079\u3066</);
+ assert.ok(!fresh.includes('<b>')&&!fresh.includes(' open'));
+ const picked=context.tagDD('group',['A','TagB'],['A','TagB'],ALL,'filter');
+ assert.match(picked,/class="tagdd-l">A, TagB</);
+ assert.ok(!/data-all checked/.test(picked));
+ const box=(value,checked)=>({value,checked});
+ const all=box(undefined,true),a=box('A',false),b=box('TagB',false);
+ const dd={querySelector:()=>all,querySelectorAll:()=>[a,b]};
+ a.checked=true;assert.deepEqual([...context.tagDDValue(dd,a)],['A']);assert.equal(all.checked,false);
+ b.checked=true;assert.deepEqual([...context.tagDDValue(dd,b)],['A','TagB']);
+ all.checked=true;assert.deepEqual([...context.tagDDValue(dd,all)],[]);assert.equal(a.checked||b.checked,false);
+ all.checked=false;context.tagDDValue(dd,all);assert.equal(all.checked,true);
+ assert.ok(!source.includes('<select id="group" multiple'));
+ assert.ok(!source.includes('name="group_tags" multiple'));
+ const css=fs.readFileSync(path.join(__dirname,'..','static','style.css'),'utf8');
+ assert.match(css,/\.tagdd-l\{[^}]*text-overflow:ellipsis/);
+ assert.match(css,/\.tagdd-m\{position:absolute/);
+});

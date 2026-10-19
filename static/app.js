@@ -38,10 +38,18 @@ function card(j){return `<article class="card" draggable="true" data-job-id="${j
  ${j.task_counts.total?bar(j):''}${j.conditions?`<p>${esc(j.conditions)}</p>`:''}</article>`;}
 function filtered(list){const q=S.q.toLowerCase();return list.filter(j=>(!S.who||j.assignees.includes(S.who)||(j.tasks||[]).some(t=>t.assignee===S.who))&&(!S.prio||j.priority===S.prio)&&S.group.every(g=>(j.group_tags||[]).includes(g))&&
   (!q||[j.title,j.conditions,j.policy,j.note,j.description,j.source?j.source.system+':'+j.source.number:''].join(' ').toLowerCase().includes(q)));}
+const DD_OPEN=new Set();
+const tagDDLabel=(sel,empty)=>sel.length?sel.join(', '):empty;
+const tagDD=(id,names,sel,empty,label)=>{const t=esc(tagDDLabel(sel,empty));return `<details class="tagdd" id="${id}" data-empty="${esc(empty)}"${DD_OPEN.has(id)?' open':''}><summary aria-label="${esc(label)}" title="${t}"><span class="tagdd-l">${t}</span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary><div class="tagdd-m" role="group" aria-label="${esc(label)}"><label><input type="checkbox" data-all ${sel.length?'':'checked'}>${esc(empty)}</label>${names.map(n=>`<label><input type="checkbox" value="${esc(n)}" ${sel.includes(n)?'checked':''}>${esc(n)}</label>`).join('')}</div></details>`;};
+const tagDDValue=(dd,changed)=>{const all=dd.querySelector('[data-all]'),boxes=[...dd.querySelectorAll('input[value]')];if(changed===all){if(all.checked)boxes.forEach(b=>b.checked=false);else if(!boxes.some(b=>b.checked))all.checked=true;}else all.checked=!boxes.some(b=>b.checked);return boxes.filter(b=>b.checked).map(b=>b.value);};
+function bindTagDD(dd,onChange){if(!dd)return;dd.ontoggle=()=>{if(dd.open)DD_OPEN.add(dd.id);else DD_OPEN.delete(dd.id);};
+ dd.onchange=e=>{const v=tagDDValue(dd,e.target),t=tagDDLabel(v,dd.dataset.empty);dd.querySelector('.tagdd-l').textContent=t;dd.querySelector('summary').title=t;onChange(v);};}
+if(typeof document!=='undefined'){document.addEventListener('click',e=>document.querySelectorAll('details.tagdd[open]').forEach(d=>{if(!d.contains(e.target))d.open=false;}));
+ document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('details.tagdd[open]').forEach(d=>{d.open=false;d.querySelector('summary').focus();});});}
 function topbar(mode){const groups=S.tags.map(g=>g.name);
  return `<header class="top" role="toolbar" aria-label="ツールバー">  <label class="search">${I.search}<input type="search" id="q" placeholder="タイトル・内容を検索" aria-label="タイトル・内容を検索" value="${esc(S.q)}"></label>
   <select id="prio" aria-label="優先度フィルタ"><option value="">すべての優先度</option>${Object.entries(LV).map(([k,v])=>`<option value="${k}" ${S.prio===k?'selected':''}>優先度 ${v}</option>`).join('')}</select>
-  <select id="group" multiple aria-label="グループタグ ANDフィルタ">${groups.map(g=>`<option ${S.group.includes(g)?'selected':''}>${esc(g)}</option>`).join('')}</select>
+  ${tagDD('group',groups,S.group,'すべて','グループタグ ANDフィルタ')}
   <button class="primary" id="new" data-action="create-job"${mode==='done'?' aria-hidden="true" disabled tabindex="-1" style="display:inline-flex;visibility:hidden"':''}>＋ ジョブを作成</button></header>`;}
 function renderBoard(mode){const m=$('#main');let list=filtered(S.jobs),body;
  if(mode==='done'||mode==='draft'){list=mode==='done'?list.filter(j=>j.status==='done'):list.filter(j=>j.status!=='done'&&!j.task_counts.total);
@@ -61,7 +69,7 @@ function renderBoard(mode){const m=$('#main');let list=filtered(S.jobs),body;
 function bindBoard(){const m=$('#main');
  m.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{S.view=b.dataset.view;localStorage.setItem('jb-view',S.view);route();});
  const q=$('#q');q.oninput=()=>{S.q=q.value;const p=q.selectionStart;route();const n=$('#q');n.focus();n.setSelectionRange(p,p);};
- $('#prio').onchange=e=>{S.prio=e.target.value;route();};$('#group').onchange=e=>{S.group=Array.from(e.target.selectedOptions,x=>x.value);route();};
+ $('#prio').onchange=e=>{S.prio=e.target.value;route();};bindTagDD($('#group'),v=>{S.group=v;route();});
  $('#new').onclick=()=>{$('#new-form').reset();$('#new-dlg').showModal();};
  m.querySelectorAll('.pop .card').forEach(c=>c.removeAttribute('draggable'));
  m.querySelectorAll('.card').forEach(c=>{c.onclick=e=>{const cp=e.target.closest('[data-copy]');if(cp){e.stopPropagation();copy(location.origin+location.pathname+'#/job/'+cp.dataset.copy,'リンクをコピーしました');return;}location.hash='#/job/'+c.dataset.jobId;};
@@ -111,7 +119,7 @@ ${esc(j.note)}</textarea></div></form>`;
   <div class="fields"><label>ステータス${sel('status',[['wait','wait'],['ready','ready'],['run','run'],['done','完了']],j.status,'ステータス','data-job-field')}</label>
    <label>優先度${sel('priority',Object.entries(LV),j.priority,'優先度','data-job-field')}</label><label>重要度${sel('importance',Object.entries(LV).slice(0,3),j.importance,'重要度','data-job-field')}</label><label>実施順<input type="number" step="any" name="sort" data-job-field value="${j.sort}"></label>
    <div class="jasg" style="grid-column:1/-1" role="group" aria-label="ジョブ担当者">ジョブ担当<div>${S.assignees.map(a=>`<button class="pill ${j.assignees.includes(a.name)?'on':''}" data-jasg="${esc(a.name)}" aria-pressed="${j.assignees.includes(a.name)}">${av(a.name)}${esc(a.name)}</button>`).join('')}</div></div>
-   <span></span><label style="grid-column:span 2">グループタグ（複数選択）<select name="group_tags" multiple data-job-field aria-label="グループタグ">${S.tags.map(g=>`<option ${(j.group_tags||[]).includes(g.name)?'selected':''}>${esc(g.name)}</option>`).join('')}</select><a href="#/master" class="mlink" data-mseg="tags">＋ マスタで管理</a></label></div>
+   <span></span><div class="flabel" style="grid-column:span 2">グループタグ（複数選択）${tagDD('job-group-tags',S.tags.map(g=>g.name),j.group_tags||[],'なし','グループタグ')}<a href="#/master" class="mlink" data-mseg="tags">＋ マスタで管理</a></div></div>
   <section class="dz" aria-label="危険ゾーン"><h3><button class="dz-h" id="dz-toggle" aria-expanded="false" aria-controls="dz-body">危険ゾーン<svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></h3>
    <div class="dz-wrap" id="dz-body" hidden inert><div class="dz-in"><div class="dz-row"><span>ジョブとタスク・履歴を完全に削除します。</span><button class="danger-outline" id="del-job" data-action="delete-job">このジョブを削除</button></div></div></div></section>
   ${sourceHistoryView(j.source_history)}<details class="hist"><summary>移管先操作履歴 ${j.history.length}</summary><ul>${j.history.map(h=>`<li>${esc(h.at.replace('T',' ').slice(0,16))} [${esc(h.category||'operation')}] ${esc(h.batch_id)} — ${esc(h.text)}</li>`).join('')}</ul></details></section>
@@ -134,6 +142,7 @@ ${esc((t.session_urls||[]).join('\n'))}</textarea></label>${referenceView(t.reso
  const m=$('#main');
  m.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>copy(b.dataset.c));
  m.querySelectorAll('[data-job-field]').forEach(el=>el.onchange=async()=>{await api('/jobs/'+j.id,{method:'PATCH',body:{[el.name]:el.multiple?Array.from(el.selectedOptions,x=>x.value):el.type==='number'?Number(el.value):el.value}});toast('保存しました');await load();});
+  bindTagDD(m.querySelector('#job-group-tags'),async v=>{await api('/jobs/'+j.id,{method:'PATCH',body:{group_tags:v}});toast('保存しました');await load();});
  m.querySelectorAll('[data-task-order]').forEach(el=>el.onchange=async()=>{await api('/tasks/'+el.closest('.task').dataset.taskId,{method:'PATCH',body:{sort:Number(el.value)}});await load();});
  m.querySelectorAll('.task select').forEach(el=>el.onchange=async()=>{await api('/tasks/'+el.closest('.task').dataset.taskId,{method:'PATCH',body:{[el.name]:el.value}});toast('保存しました');await load();});
  m.querySelectorAll('form.tbody').forEach(f=>{f.querySelector('[data-edit-task]').onclick=()=>{setEd(f,true);f.title.focus();};
