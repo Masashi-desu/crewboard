@@ -263,3 +263,11 @@ select.inplace{background-color:var(--bg)}
 [data-markdown]{white-space:normal;overflow-wrap:anywhere}[data-markdown] pre,.source-ref pre{white-space:pre-wrap;overflow:auto}[data-markdown] code{font-family:monospace}.source-ref{font-size:12px;color:var(--mut)}
 .thead{flex-wrap:wrap}.thead input[type=number]{width:5em}.task textarea,.addform textarea{max-width:100%}
 .job-wait{display:grid;gap:8px;margin:16px 0}.job-wait-field{display:block}.job-wait-field>span{font-size:12px;color:var(--mut)}.job-wait-slot{height:4.5rem;margin-top:4px}.job-wait-slot>.v,.job-wait-slot>.e{box-sizing:border-box;display:block;width:100%;height:100%;margin:0;padding:4px;white-space:pre-wrap;overflow:auto;font:inherit}.job-wait-slot>[hidden]{display:none}
+
+/* full-screen layout + overlay scrollbars (native bars hidden everywhere, never narrow content) */
+.app{height:100vh;height:100dvh}
+*{scrollbar-width:none;-ms-overflow-style:none}*::-webkit-scrollbar{width:0;height:0;display:none}
+.osb{position:fixed;z-index:2147483000;border-radius:3px;background:rgba(0,0,0,.32);opacity:0;pointer-events:none;transition:opacity .35s,background .2s;touch-action:none}
+.osb-y{width:6px}.osb-x{height:6px}.osb.on{opacity:1;pointer-events:auto}.osb:hover,.osb.drag{background:rgba(0,0,0,.5)}
+[data-theme=dark] .osb{background:rgba(255,255,255,.3)}[data-theme=dark] .osb:hover,[data-theme=dark] .osb.drag{background:rgba(255,255,255,.5)}
+@media (pointer:coarse){.osb{display:none!important}}

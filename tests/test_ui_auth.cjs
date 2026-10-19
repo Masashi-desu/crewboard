@@ -155,3 +155,21 @@ test('job wait editors use fixed slots and preserve unchanged source newlines',(
  const css=fs.readFileSync(path.join(__dirname,'..','static','style.css'),'utf8');
  assert.match(css,/\.job-wait-slot\{height:[^}]+\}/);
 });
+
+test('overlay scrollbar hides native bars and computes thumb geometry without layout width',()=>{
+ const css=fs.readFileSync(path.join(__dirname,'..','static','style.css'),'utf8');
+ assert.match(css,/\*\{scrollbar-width:none/);
+ assert.match(css,/::-webkit-scrollbar\{width:0;height:0/);
+ assert.match(css,/\.osb\{position:fixed[^}]*pointer-events:none/);
+ assert.match(css,/\[data-theme=dark\] \.osb\{background:rgba\(/);
+ assert.match(css,/\.app\{height:100vh;height:100dvh\}/);
+ const osbSource=source.slice(source.indexOf('const OSB='));
+ const context=vm.createContext({});
+ vm.runInContext(osbSource+'\nglobalThis.OSB=OSB;',context);
+ const {geom}=context.OSB;
+ assert.equal(geom(500,500,0,496),null);
+ const top=geom(500,1000,0,496);assert.equal(top.off,0);assert.equal(top.size,248);
+ const end=geom(500,1000,500,496);assert.equal(end.off+end.size,496);
+ assert.equal(geom(100,100000,0,96).size,24);
+ assert.equal(geom(500,1000,250,496).ratio*(496-248),500);
+});

@@ -283,3 +283,36 @@ async function liveConnect(){if(!window.EventSource)return;
  es.onerror=()=>{LIVE.lost=true;if(es.readyState===EventSource.CLOSED)setTimeout(()=>{if(LIVE.es===es)liveConnect();},5000);};}
 load().then(liveConnect).catch(e=>toast(e.message));
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&LIVE.es&&LIVE.es.readyState===EventSource.CLOSED)liveConnect();});
+
+/* overlay scrollbar: native bars are hidden in CSS; a thin translucent thumb floats over content (no layout width) */
+const OSB=(()=>{
+ const geom=(client,scroll,pos,track)=>{if(!(scroll>client+1)||track<=0)return null;const size=Math.min(track,Math.max(24,track*client/scroll));const max=scroll-client;return {size,off:(track-size)*Math.min(1,Math.max(0,pos/max)),ratio:max/Math.max(1,track-size)};};
+ if(typeof document==='undefined'||!document.documentElement||typeof getComputedStyle==='undefined')return {geom};
+ const bars=new Map(),root=()=>document.scrollingElement||document.documentElement;
+ const isDoc=el=>el===root()||el===document.documentElement||el===document.body;
+ const canScroll=(el,s)=>(/(auto|scroll)/.test(s.overflowY)&&el.scrollHeight>el.clientHeight+1)||(/(auto|scroll)/.test(s.overflowX)&&el.scrollWidth>el.clientWidth+1);
+ const scroller=el=>{for(;el&&el.nodeType===1&&!isDoc(el);el=el.parentElement){if(el.classList.contains('osb'))return null;if(canScroll(el,getComputedStyle(el)))return el;}const d=root();return d&&(d.scrollHeight>d.clientHeight+1||d.scrollWidth>d.clientWidth+1)?d:null;};
+ const ro=typeof ResizeObserver==='function'?new ResizeObserver(es=>es.forEach(e=>{const b=bars.get(e.target);if(b)place(e.target,b);})):null;
+ const drag=(el,b,axis)=>e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();const t=e.currentTarget,start=axis==='y'?e.clientY:e.clientX,pos=axis==='y'?el.scrollTop:el.scrollLeft,g=b['g'+axis];if(!g)return;
+  t.classList.add('drag');b.hold=true;try{t.setPointerCapture(e.pointerId);}catch(_){}
+  const mv=ev=>{const d=((axis==='y'?ev.clientY:ev.clientX)-start)*g.ratio;if(axis==='y')el.scrollTop=pos+d;else el.scrollLeft=pos+d;};
+  const up=()=>{t.classList.remove('drag');b.hold=false;t.removeEventListener('pointermove',mv);t.removeEventListener('pointerup',up);t.removeEventListener('pointercancel',up);show(el);};
+  t.addEventListener('pointermove',mv);t.addEventListener('pointerup',up);t.addEventListener('pointercancel',up);};
+ const make=el=>{const b={};['y','x'].forEach(a=>{const t=document.createElement('div');t.className='osb osb-'+a;t.setAttribute('aria-hidden','true');t.addEventListener('pointerdown',drag(el,b,a));
+  t.addEventListener('pointerenter',()=>{b.over=true;show(el);});t.addEventListener('pointerleave',()=>{b.over=false;show(el);});document.body.appendChild(t);b[a]=t;});
+  bars.set(el,b);if(ro&&!isDoc(el))ro.observe(el);return b;};
+ const drop=el=>{const b=bars.get(el);if(!b)return;b.x.remove();b.y.remove();clearTimeout(b.timer);if(ro)ro.unobserve(el);bars.delete(el);};
+ const place=(el,b)=>{if(!el.isConnected)return drop(el);const doc=isDoc(el),r=doc?{top:0,left:0}:el.getBoundingClientRect(),L=r.left+(doc?0:el.clientLeft),T=r.top+(doc?0:el.clientTop),W=el.clientWidth,H=doc?(window.innerHeight||el.clientHeight):el.clientHeight;
+  const gy=b.gy=geom(H,el.scrollHeight,el.scrollTop,H-4),gx=b.gx=geom(doc?(window.innerWidth||W):W,el.scrollWidth,el.scrollLeft,W-4);
+  b.y.style.display=gy?'':'none';if(gy)Object.assign(b.y.style,{top:(T+2+gy.off)+'px',left:(L+W-8)+'px',height:gy.size+'px'});
+  b.x.style.display=gx?'':'none';if(gx)Object.assign(b.x.style,{left:(L+2+gx.off)+'px',top:(T+H-8)+'px',width:gx.size+'px'});};
+ const show=el=>{const b=bars.get(el)||make(el);place(el,b);b.y.classList.add('on');b.x.classList.add('on');clearTimeout(b.timer);
+  b.timer=setTimeout(()=>{if(b.hold||b.over)return;b.y.classList.remove('on');b.x.classList.remove('on');},900);};
+ const all=()=>bars.forEach((b,el)=>place(el,b));
+ let raf=0;const later=fn=>{if(!raf)raf=requestAnimationFrame(()=>{raf=0;fn();});};
+ document.addEventListener('scroll',e=>{const t=e.target===document?root():e.target;if(t&&t.nodeType===1)show(t);},{capture:true,passive:true});
+ let hov=null;document.addEventListener('pointermove',e=>{if(e.pointerType!=='mouse')return;hov=e.target;later(()=>{const el=hov&&scroller(hov);if(el)show(el);all();});},{passive:true});
+ window.addEventListener('resize',()=>later(all));
+ if(typeof MutationObserver==='function')new MutationObserver(()=>later(all)).observe(document.body,{childList:true,subtree:true,characterData:true});
+ return {geom,show,bars};
+})();
